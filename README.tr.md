@@ -32,8 +32,13 @@ Fazların çoğu bitti; her faz tek başına işe yarayan bir şey bırakıyor.
 
 ## Kullanım
 
-Yönetici hakkı gerekir (WinDivert bir çekirdek sürücüsü yükler). Ölçüp arka planda
-korunmaya devam etmek için:
+Yönetici hakkı gerekir (WinDivert bir çekirdek sürücüsü yükler).
+
+**En kolay yol:** **`install.cmd`** dosyasına çift tıkla. Yönetici izni ister, sonra
+her adımı pencerede gösterir — hattını ölçer, çalışan ayarı seçer, servisi kurar.
+Kaldırmak için **`uninstall.cmd`**.
+
+Ya da terminalden:
 
 ```
 mole install --auto      # ölç, kazananı seç, kendini onaran servisi kur

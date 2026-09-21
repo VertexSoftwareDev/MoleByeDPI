@@ -5,3 +5,6 @@
 *.pdb
 # WinDivert vendored binaries are tracked (needed to build/run); everything built is ignored.
 !/vendor/
+
+# Local staging dir for the release package
+/dist

@@ -22,6 +22,7 @@ jobs:
           New-Item -ItemType Directory -Force $out | Out-Null
           Copy-Item target/release/mole.exe      $out/
           Copy-Item target/release/mole-gui.exe  $out/
+          Copy-Item install.cmd, uninstall.cmd   $out/
           Copy-Item vendor/windivert/x64/WinDivert.dll   $out/
           Copy-Item vendor/windivert/x64/WinDivert64.sys $out/
           Copy-Item README.md, README.tr.md, LICENSE     $out/

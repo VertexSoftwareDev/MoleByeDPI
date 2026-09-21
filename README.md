@@ -71,7 +71,11 @@ block* (a local tool can't help), or *DPI block, no bypass yet* — and tells th
 difference by measuring, never guessing. A running GoodByeDPI/zapret/ByeDPI
 service rewrites the same handshakes, so `probe` warns and you should stop it first.
 
-To measure and then stay protected in the background:
+The friendly way: double-click **`install.cmd`** (it asks for administrator, then
+shows every step in the window — measures the line, picks the strategy, installs
+the service). **`uninstall.cmd`** removes it the same way.
+
+Or from a terminal:
 
 ```
 mole install --auto      # probe, pick the winner, install the self-healing service
