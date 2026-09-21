@@ -12,6 +12,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+mod serve;
+
 use mole_core::admin::is_elevated;
 use mole_core::packet::find_sni;
 use mole_core::service::conflicting_dpi_service;
@@ -38,6 +40,12 @@ fn main() {
         "status" => cmd_status(),
         "report" => cmd_report(rest),
         "service-run" => cmd_service_run(),
+        // Internal: run the service body in the foreground (for testing the
+        // self-healing loop without the SCM). Not shown in help.
+        "serve-fg" if is_elevated() => {
+            serve::serve();
+            0
+        }
         "version" | "--version" | "-V" => {
             println!("mole {}", env!("CARGO_PKG_VERSION"));
             0
@@ -883,7 +891,7 @@ fn cmd_report(args: &[String]) -> i32 {
 /// we just hand control to the dispatcher.
 fn cmd_service_run() -> i32 {
     use mole_core::winservice;
-    match winservice::run_dispatcher() {
+    match winservice::run_dispatcher(serve::serve) {
         Ok(()) => 0,
         Err(_) => 1,
     }

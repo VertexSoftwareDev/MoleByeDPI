@@ -27,10 +27,6 @@ use windows_sys::Win32::System::Services::{
     SERVICE_WIN32_OWN_PROCESS,
 };
 
-use crate::config::Config;
-use crate::engine::{FilterEngine, QuicBlocker};
-use crate::ffi::WinDivertApi;
-use crate::strategy::Strategy;
 use crate::windivert::WinDivert;
 
 pub const SERVICE_NAME: &str = "MoleService";
@@ -202,9 +198,27 @@ fn with_service<T>(
 
 // ── The service entry point ──────────────────────────────────────────────────
 
-/// Hand control to the SCM: it calls `service_main` on a service thread. Called
-/// from `mole service-run`, which the SCM launches.
-pub fn run_dispatcher() -> Result<(), ServiceError> {
+/// The service body, supplied by the caller (mole-cli, where the probe lives).
+/// It should run until `should_stop()` returns true. Stored so the C `ServiceMain`
+/// callback can reach it.
+static SERVE: OnceLock<fn()> = OnceLock::new();
+
+/// True once the SCM has asked the service to stop.
+pub fn should_stop() -> bool {
+    STOP.load(Ordering::SeqCst)
+}
+
+/// Register (or clear) the live engine handle so a stop request can unblock it.
+pub fn register_stopper(handle: Option<Arc<WinDivert>>) {
+    if let Ok(mut slot) = stopper_slot().lock() {
+        *slot = handle;
+    }
+}
+
+/// Hand control to the SCM: it calls `service_main` on a service thread, which
+/// runs `serve` until stop. Called from `mole service-run`, which the SCM launches.
+pub fn run_dispatcher(serve: fn()) -> Result<(), ServiceError> {
+    let _ = SERVE.set(serve);
     let name = wide(SERVICE_NAME);
     let table = [
         SERVICE_TABLE_ENTRYW {
@@ -272,82 +286,18 @@ unsafe extern "system" fn service_main(_argc: u32, _argv: *mut *mut u16) {
     STATUS_HANDLE.store(handle as isize, Ordering::SeqCst);
     set_status(SERVICE_START_PENDING, 0, 3000);
 
-    // Run the engine, retrying a few times if the driver drops out from under us
-    // before giving Windows the failure it needs to restart the whole service.
+    // Run the caller-supplied service body until it returns (on stop).
     let accept = SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN;
     set_status(SERVICE_RUNNING, accept, 0);
-    serve_until_stop();
-    set_status(SERVICE_STOPPED, 0, 0);
-}
-
-/// Load the saved strategy and run the engine until told to stop, healing across
-/// transient engine failures.
-fn serve_until_stop() {
-    let mut attempts = 0u32;
-    while !STOP.load(Ordering::SeqCst) {
-        match run_once() {
-            EngineExit::Stopped => break,
-            EngineExit::Failed => {
-                attempts += 1;
-                if attempts >= 5 {
-                    // Give up in-process; the SCM's failure actions restart us.
-                    std::process::exit(1);
-                }
-                std::thread::sleep(std::time::Duration::from_millis(500 * attempts as u64));
-            }
+    if let Some(serve) = SERVE.get() {
+        serve();
+    } else {
+        // No body was registered; just wait to be stopped.
+        while !STOP.load(Ordering::SeqCst) {
+            std::thread::sleep(std::time::Duration::from_millis(500));
         }
     }
-}
-
-enum EngineExit {
-    Stopped,
-    Failed,
-}
-
-fn run_once() -> EngineExit {
-    let Some(cfg) = Config::load() else {
-        // No configuration means nothing to apply; wait to be stopped rather than
-        // spinning. A user must run `mole install --auto` or set a strategy.
-        return wait_for_stop();
-    };
-    let Some(strategy) = Strategy::from_label(&cfg.strategy) else {
-        return wait_for_stop();
-    };
-    let api = match WinDivertApi::load() {
-        Ok(a) => Arc::new(a),
-        Err(_) => return EngineExit::Failed,
-    };
-    let engine = match FilterEngine::start(api.clone(), strategy) {
-        Ok(e) => e,
-        Err(_) => return EngineExit::Failed, // often an AV shield; SCM will retry
-    };
-    // Hold QUIC back only if the user chose it (kept alive for this run).
-    let _quic = if cfg.block_quic {
-        QuicBlocker::start(api).ok()
-    } else {
-        None
-    };
-
-    if let Ok(mut slot) = stopper_slot().lock() {
-        *slot = Some(engine.stopper());
-    }
-    engine.run(&STOP);
-    if let Ok(mut slot) = stopper_slot().lock() {
-        *slot = None;
-    }
-
-    if STOP.load(Ordering::SeqCst) {
-        EngineExit::Stopped
-    } else {
-        EngineExit::Failed // loop ended on its own — treat as a fault to heal
-    }
-}
-
-fn wait_for_stop() -> EngineExit {
-    while !STOP.load(Ordering::SeqCst) {
-        std::thread::sleep(std::time::Duration::from_millis(500));
-    }
-    EngineExit::Stopped
+    set_status(SERVICE_STOPPED, 0, 0);
 }
 
 // ── Errors ───────────────────────────────────────────────────────────────────
