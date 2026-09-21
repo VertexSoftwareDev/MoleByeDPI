@@ -10,10 +10,14 @@
 //! on drop, so if Mole stops, traffic flows.
 
 pub mod admin;
+pub mod checksum;
 pub mod ffi;
 pub mod packet;
+pub mod service;
+pub mod strategy;
 pub mod windivert;
 
 pub use ffi::{LoadError, WinDivertApi, WinDivertAddress};
 pub use packet::{find_sni, is_client_hello, TcpView};
+pub use strategy::{Cut, Decoy, Emit, Strategy};
 pub use windivert::{Mode, Packet, WinDivert, WinDivertError};

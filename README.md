@@ -17,13 +17,17 @@ Early. Building phase by phase; each phase leaves something that works on its ow
 | Phase | What it delivers | State |
 |-------|------------------|-------|
 | **0. Foundation** | WinDivert integration, packet capture proof, admin/driver lifecycle | **done** |
-| 1. Probe (CLI) | Try the strategies, find and report the winner | next |
-| 2. Filter engine | Apply the chosen strategy live | — |
-| 3. DNS (DoH) | Get past DNS hijacking | — |
-| 4. Service + tray | Self-healing service, status icon, AV-conflict detection | — |
+| **1. Probe (CLI)** | Try the strategies, find and report the winner, say *why* | **done** |
+| **2. Filter engine (core)** | The desync strategies as pure, tested transforms, applied live during a probe | **done** (battery to grow) |
+| **3. DNS (DoH)** | Get past DNS hijacking; correct resolution for the probe | **done** |
+| 4. Service + tray | Self-healing service, status icon, AV-conflict detection | next |
 | 5. UDP/QUIC | The untouched half of the connection | — |
 | 6. Diagnostics + report | "Why it failed", opt-out community report | — |
 | 7. Polish | GUI, bilingual README, release flow | — |
+
+Phases 1–3 share one engine: the probe applies each strategy through the *same*
+`mole-core` code the live filter will use, so what it measures is what production
+does. See [docs/findings.md](docs/findings.md) for what real lines actually did.
 
 ## Layout
 
@@ -46,9 +50,18 @@ The runner looks for `WinDivert.dll` / `WinDivert64.sys` beside the executable, 
 prompt:
 
 ```
-mole doctor      # check admin, driver, and a live capture
-mole capture     # sniff outbound TLS ClientHellos and show their SNI (traffic untouched)
+mole doctor              # check admin, driver, and a live capture
+mole capture             # sniff outbound ClientHellos, show their SNI (traffic untouched)
+mole dns <host>          # resolve over DoH (bypasses DNS hijacking)
+mole probe [host ...]    # measure which bypass strategy works on this line
 ```
+
+`mole probe` resolves each target over DoH, then attempts a TLS handshake with no
+help (the control) and once per strategy, watching for the server's reply. It
+reports one of: *not blocked*, *bypass found* (naming the winning strategy), *IP
+block* (a local tool can't help), or *DPI block, no bypass yet* — and tells the
+difference by measuring, never guessing. A running GoodByeDPI/zapret/ByeDPI
+service rewrites the same handshakes, so `probe` warns and you should stop it first.
 
 `doctor` on this machine, with the driver installed and one HTTPS packet caught:
 

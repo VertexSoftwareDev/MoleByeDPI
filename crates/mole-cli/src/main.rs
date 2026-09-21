@@ -15,7 +15,10 @@ use std::time::Duration;
 
 use mole_core::admin::is_elevated;
 use mole_core::packet::find_sni;
+use mole_core::service::conflicting_dpi_service;
 use mole_core::{Mode, TcpView, WinDivert, WinDivertApi};
+use mole_dns::Resolver;
+use mole_probe::{ProbeOptions, ProbeReport, Verdict};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -25,6 +28,8 @@ fn main() {
     let code = match cmd {
         "doctor" => cmd_doctor(),
         "capture" => cmd_capture(rest),
+        "dns" => cmd_dns(rest),
+        "probe" => cmd_probe(rest),
         "help" | "--help" | "-h" => {
             print_help();
             0
@@ -46,8 +51,14 @@ fn print_help() {
          \x20 mole doctor              check admin, driver and packet capture\n\
          \x20 mole capture [--port P] [--count N] [--seconds S]\n\
          \x20                          sniff TLS ClientHellos and show their SNI\n\
+         \x20 mole dns <host> [--google]\n\
+         \x20                          resolve a name over DoH (bypasses DNS hijacking)\n\
+         \x20 mole probe [host ...] [--google] [--all] [--json FILE]\n\
+         \x20                          measure which bypass strategy works on this line\n\
          \n\
-         Phase 0. Measurement (probe) and the live filter engine come next."
+         `probe` with no host uses a small set of commonly-blocked targets.\n\
+         --all measures every strategy (for the community map); default stops at\n\
+         the first that works. --json writes a machine-readable report."
     );
 }
 
@@ -278,6 +289,170 @@ fn cmd_capture(args: &[String]) -> i32 {
 
     println!("\nCaptured {seen} handshake packet(s). Traffic was never touched.");
     0
+}
+
+fn cmd_dns(args: &[String]) -> i32 {
+    let mut host = None;
+    let mut resolver = Resolver::cloudflare();
+    for a in args {
+        match a.as_str() {
+            "--google" => resolver = Resolver::google(),
+            "--cloudflare" => resolver = Resolver::cloudflare(),
+            other if !other.starts_with("--") => host = Some(other.to_string()),
+            other => {
+                eprintln!("mole dns: unknown option '{other}'");
+                return 2;
+            }
+        }
+    }
+    let Some(host) = host else {
+        eprintln!("mole dns: give a host name, e.g. `mole dns example.com`");
+        return 2;
+    };
+    println!("Resolving {host} over DoH via {}...", resolver.name);
+    match resolver.resolve_a(&host) {
+        Ok(ips) if ips.is_empty() => {
+            println!("No A records returned.");
+            1
+        }
+        Ok(ips) => {
+            for ip in ips {
+                println!("  {ip}");
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("Failed: {e}");
+            1
+        }
+    }
+}
+
+/// A few targets commonly blocked in Turkey, used when the user names none.
+const DEFAULT_TARGETS: &[&str] = &["www.roblox.com", "discord.com", "www.wikipedia.org"];
+
+fn cmd_probe(args: &[String]) -> i32 {
+    let mut hosts: Vec<String> = Vec::new();
+    let mut opts = ProbeOptions::default();
+    let mut json_path: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--google" => opts.resolver = Resolver::google(),
+            "--cloudflare" => opts.resolver = Resolver::cloudflare(),
+            "--all" => opts.stop_on_first = false,
+            "--json" => {
+                i += 1;
+                json_path = args.get(i).cloned();
+                if json_path.is_none() {
+                    eprintln!("mole probe: --json needs a file path");
+                    return 2;
+                }
+            }
+            other if !other.starts_with("--") => hosts.push(other.to_string()),
+            other => {
+                eprintln!("mole probe: unknown option '{other}'");
+                return 2;
+            }
+        }
+        i += 1;
+    }
+    if hosts.is_empty() {
+        hosts = DEFAULT_TARGETS.iter().map(|s| s.to_string()).collect();
+    }
+
+    if !is_elevated() {
+        eprintln!("mole probe: needs administrator rights (WinDivert driver).");
+        return 1;
+    }
+    let api = match WinDivertApi::load() {
+        Ok(api) => Arc::new(api),
+        Err(e) => {
+            eprintln!("mole probe: {e}");
+            return 1;
+        }
+    };
+
+    // A running rival DPI tool makes every number a lie; say so loudly up front.
+    if let Some(svc) = conflicting_dpi_service() {
+        println!(
+            "WARNING: the '{svc}' service is running. It rewrites the same handshakes\n\
+             Mole is testing, so these results are unreliable. Stop it first:\n\
+             \x20   sc stop {svc}\n"
+        );
+    }
+
+    let mut reports = Vec::new();
+    for host in &hosts {
+        println!("── Probing {host} ──");
+        let report = mole_probe::run(host, api.clone(), &opts);
+        print_report(&report);
+        println!();
+        reports.push(report);
+    }
+
+    if let Some(path) = json_path {
+        match serde_json::to_string_pretty(&reports) {
+            Ok(s) => {
+                if let Err(e) = std::fs::write(&path, s) {
+                    eprintln!("mole probe: could not write {path}: {e}");
+                } else {
+                    println!("Report written to {path}");
+                }
+            }
+            Err(e) => eprintln!("mole probe: could not serialize report: {e}"),
+        }
+    }
+
+    // Exit non-zero only if every target is blocked with no bypass found.
+    let any_ok = reports
+        .iter()
+        .any(|r| matches!(r.verdict, Verdict::BypassFound | Verdict::NotBlocked));
+    if any_ok {
+        0
+    } else {
+        1
+    }
+}
+
+fn print_report(r: &ProbeReport) {
+    match &r.resolved_ip {
+        Some(ip) => println!("  resolved ({}) → {ip}", r.resolver),
+        None => println!("  resolved ({}) → failed", r.resolver),
+    }
+    match r.verdict {
+        Verdict::NotBlocked => {
+            println!("  verdict: NOT blocked on this line — the target opened with no help.");
+            println!("           ({})", r.control_detail);
+        }
+        Verdict::IpBlocked => {
+            println!("  verdict: IP-level block — a local tool cannot pass this.");
+            println!("           {}", r.control_detail);
+        }
+        Verdict::DnsFailed => {
+            println!("  verdict: could not resolve the target.");
+            println!("           {}", r.control_detail);
+        }
+        Verdict::BypassFound => {
+            for res in &r.results {
+                let mark = if res.passed { "✓" } else { "·" };
+                println!("    {mark} {:<22} {} ({} ms)", res.strategy, res.detail, res.elapsed_ms);
+            }
+            if let Some(w) = &r.winner {
+                println!("  verdict: BYPASS FOUND — use `{w}` on this line.");
+            }
+        }
+        Verdict::NoBypass => {
+            for res in &r.results {
+                println!("    · {:<22} {} ({} ms)", res.strategy, res.detail, res.elapsed_ms);
+            }
+            println!("  verdict: DPI blocks it and none of the strategies got through.");
+            println!("           control: {}", r.control_detail);
+        }
+    }
+    if let Some(c) = &r.conflict {
+        println!("  note: '{c}' service was running — results may be skewed.");
+    }
 }
 
 /// Minimal Ctrl+C handler via the Win32 console control API, so we do not pull in

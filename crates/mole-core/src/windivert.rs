@@ -122,6 +122,34 @@ impl WinDivert {
         Ok(())
     }
 
+    /// Send a packet exactly as given, without recomputing checksums. Used for a
+    /// decoy whose wrong checksum is the point — see `Decoy::BadChecksum`.
+    pub fn send_raw(&self, packet: &Packet) -> Result<(), WinDivertError> {
+        let mut sent: u32 = 0;
+        let ok = unsafe {
+            (self.api.send)(
+                self.handle,
+                packet.data.as_ptr(),
+                packet.data.len() as u32,
+                &mut sent,
+                &packet.addr,
+            )
+        };
+        if ok == 0 {
+            return Err(WinDivertError::Send(unsafe { GetLastError() }));
+        }
+        Ok(())
+    }
+
+    /// Send an `Emit`, honouring its checksum flag.
+    pub fn emit(&self, e: &mut crate::strategy::Emit) -> Result<(), WinDivertError> {
+        if e.fix_checksums {
+            self.send(&mut e.packet)
+        } else {
+            self.send_raw(&e.packet)
+        }
+    }
+
     pub fn mode(&self) -> Mode {
         self.mode
     }
