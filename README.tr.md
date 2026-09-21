@@ -10,6 +10,8 @@ trafiği yurt dışından geçirmez; sadece filtreyi şaşırtır. En büyük il
 
 Tam tasarım ve gerekçeler için: [Mole-Plan.md](../Mole-Plan.md).
 
+![Mole penceresi, korumada](docs/img/gui-dark-tr.png)
+
 ## Durum
 
 Fazların çoğu bitti; her faz tek başına işe yarayan bir şey bırakıyor.

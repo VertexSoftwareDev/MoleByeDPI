@@ -10,6 +10,8 @@ Mole stops, your internet keeps working.
 
 See [Mole-Plan.md](../Mole-Plan.md) for the full design and reasoning.
 
+![Mole's window, protected](docs/img/gui-light-en.png)
+
 ## Status
 
 Early. Building phase by phase; each phase leaves something that works on its own.
