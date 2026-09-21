@@ -1137,6 +1137,7 @@ name = "mole-gui"
 version = "0.1.0"
 dependencies = [
  "eframe",
+ "image",
  "mole-core",
  "windows-sys 0.61.2",
 ]

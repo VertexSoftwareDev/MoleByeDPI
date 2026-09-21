@@ -19,11 +19,14 @@ use status::{Health, Status};
 const INITIAL_SIZE: [f32; 2] = [460.0, 560.0];
 
 fn main() -> eframe::Result {
-    let viewport = egui::ViewportBuilder::default()
+    let mut viewport = egui::ViewportBuilder::default()
         .with_title("Mole")
         .with_inner_size(INITIAL_SIZE)
         .with_min_inner_size([400.0, 480.0])
         .with_app_id("dev.vertexsoftware.mole");
+    if let Some(icon) = icon() {
+        viewport = viewport.with_icon(icon);
+    }
 
     eframe::run_native(
         "Mole",
@@ -243,6 +246,18 @@ impl MoleApp {
             );
         }
     }
+}
+
+/// The taskbar and title-bar icon. Missing is not fatal: Windows has a default.
+fn icon() -> Option<egui::IconData> {
+    const PNG: &[u8] = include_bytes!("../../../icons/256x256.png");
+    let decoded = image::load_from_memory(PNG).ok()?.into_rgba8();
+    let (width, height) = decoded.dimensions();
+    Some(egui::IconData {
+        rgba: decoded.into_raw(),
+        width,
+        height,
+    })
 }
 
 /// The CLI sits next to this window's executable.

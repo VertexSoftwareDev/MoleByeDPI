@@ -47,3 +47,37 @@ instrument to develop and verify it against, one measured attempt at a time.
 - "Say why" already pays off: we can tell an SNI/DPI reset apart from an IP block
   or a DNS lie, on this line, today.
 - Auto-TTL fake tuning is the gap between "measures correctly" and "gets you in".
+
+## 2026-09-21 (later) · Same line — BYPASS WORKING, end to end
+
+Two fixes turned "measures correctly" into "gets you in", both verified live
+(elevated, Avast paused):
+
+**1. The decoy needed a benign name.** The fake decoys had been repeating the
+*real* (blocked) SNI, poisoning nothing. Carrying a benign `www.google.com`
+ClientHello at the real sequence number, plus a TTL sweep (2–9), and the line
+opens: `fake:ttl3..9` and `fakesplit:ttl3..9:sni` all complete a full TLS 1.3
+handshake to Roblox and Discord. Proven with a real SChannel client, service
+running vs. removed:
+
+| Mole service | www.roblox.com (by IP, real SNI) |
+|--------------|----------------------------------|
+| running `fake:ttl3` | **TLS 1.3 completed** |
+| removed | connection reset (blocked again) |
+
+`mole install --auto` measured the line, picked `fake:ttl3`, installed the
+self-healing service, and the blocked sites opened. Uninstall restored the block
+and left nothing behind. The whole product works.
+
+**2. A reply is not a handshake.** `fake:badsum` *replied* but the handshake then
+broke — this NIC's TCP checksum offload repairs the decoy's deliberately-wrong
+checksum on the way out, so the decoy reaches the server as a valid duplicate and
+corrupts the stream. The probe used to count that first reply as a win (a false
+positive). It now drives the **full** handshake, so `fake:badsum` is correctly
+reported as *"SNI got through but the handshake broke (checksum offload)"* and a
+TTL-based fake — which actually completes — wins instead. Lesson baked in: measure
+the usable outcome, not the first encouraging sign.
+
+**Where the DPI sits.** Every TTL from 3 upward works, 2 doesn't — so the middlebox
+is ~2 hops out on this line, and a fixed low TTL like 3–5 is plenty here. The sweep
+finds it without needing to know that in advance.
