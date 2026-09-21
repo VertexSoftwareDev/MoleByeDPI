@@ -16,7 +16,7 @@ use std::time::Duration;
 use mole_core::admin::is_elevated;
 use mole_core::packet::find_sni;
 use mole_core::service::conflicting_dpi_service;
-use mole_core::{Config, FilterEngine, Mode, Strategy, TcpView, WinDivert, WinDivertApi};
+use mole_core::{Config, FilterEngine, Mode, QuicBlocker, Strategy, TcpView, WinDivert, WinDivertApi};
 use mole_dns::Resolver;
 use mole_probe::{ProbeOptions, ProbeReport, Verdict};
 
@@ -56,7 +56,7 @@ fn print_help() {
          \x20                          resolve a name over DoH (bypasses DNS hijacking)\n\
          \x20 mole probe [host ...] [--google] [--all] [--json FILE]\n\
          \x20                          measure which bypass strategy works on this line\n\
-         \x20 mole apply [<strategy> | --auto [host ...]]\n\
+         \x20 mole apply [<strategy> | --auto [host ...]] [--block-quic]\n\
          \x20                          apply a strategy system-wide until stopped\n\
          \n\
          `probe` with no host uses a small set of commonly-blocked targets.\n\
@@ -423,12 +423,14 @@ fn cmd_probe(args: &[String]) -> i32 {
 
 fn cmd_apply(args: &[String]) -> i32 {
     let mut auto = false;
+    let mut block_quic = false;
     let mut hosts: Vec<String> = Vec::new();
     let mut label: Option<String> = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--auto" => auto = true,
+            "--block-quic" => block_quic = true,
             other if other.starts_with("--") => {
                 eprintln!("mole apply: unknown option '{other}'");
                 return 2;
@@ -493,7 +495,7 @@ fn cmd_apply(args: &[String]) -> i32 {
         }
     };
 
-    run_engine(api, strategy)
+    run_engine(api, strategy, block_quic)
 }
 
 /// Probe the targets, pick the first strategy that works anywhere, and save it.
@@ -536,14 +538,32 @@ fn verdict_word(v: &Verdict) -> &'static str {
 }
 
 /// Run the live engine until Ctrl+C, then stop and restore normal traffic.
-fn run_engine(api: Arc<WinDivertApi>, strategy: Strategy) -> i32 {
-    let engine = match FilterEngine::start(api, strategy.clone()) {
+fn run_engine(api: Arc<WinDivertApi>, strategy: Strategy, block_quic: bool) -> i32 {
+    let engine = match FilterEngine::start(api.clone(), strategy.clone()) {
         Ok(e) => Arc::new(e),
         Err(e) => {
             eprintln!("mole apply: {e}");
             return 1;
         }
     };
+
+    // Optionally hold QUIC back so browsers fall onto TCP, which we shape. Kept
+    // alive for the run; dropped on exit, which restores QUIC.
+    let _quic = if block_quic {
+        match QuicBlocker::start(api) {
+            Ok(q) => {
+                println!("Blocking outbound QUIC (UDP :443) — browsers will use TCP.");
+                Some(q)
+            }
+            Err(e) => {
+                eprintln!("mole apply: could not block QUIC: {e}");
+                return 1;
+            }
+        }
+    } else {
+        None
+    };
+
     println!(
         "Applying '{}' to all outbound HTTPS. Ctrl+C to stop (traffic then flows normally).\n",
         strategy.label()

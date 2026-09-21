@@ -20,7 +20,7 @@ pub mod strategy;
 pub mod windivert;
 
 pub use config::Config;
-pub use engine::FilterEngine;
+pub use engine::{FilterEngine, QuicBlocker};
 pub use ffi::{LoadError, WinDivertApi, WinDivertAddress};
 pub use packet::{find_sni, is_client_hello, TcpView};
 pub use strategy::{Cut, Decoy, Emit, Strategy};

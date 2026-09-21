@@ -17,6 +17,25 @@ use crate::packet::{is_client_hello, TcpView};
 use crate::strategy::Strategy;
 use crate::windivert::{Mode, WinDivert, WinDivertError};
 
+/// Blocks outbound QUIC (UDP :443) so browsers fall back to TLS-over-TCP, which
+/// the filter engine does handle. This is the cheap first step for "the untouched
+/// half" from the plan: it doesn't bypass QUIC, it sidesteps it. The cost is real
+/// — QUIC to *unblocked* sites is forced onto TCP too, adding a little latency —
+/// so it is opt-in. A full QUIC Initial desync can replace it later.
+///
+/// The handle drops matches in the driver; holding it open is all that's needed.
+/// Dropping it (on stop or process exit) restores QUIC — fail-open here too.
+pub struct QuicBlocker {
+    _handle: WinDivert,
+}
+
+impl QuicBlocker {
+    pub fn start(api: Arc<WinDivertApi>) -> Result<QuicBlocker, WinDivertError> {
+        let handle = WinDivert::open(api, "outbound and udp.DstPort == 443", Mode::Drop, 1000)?;
+        Ok(QuicBlocker { _handle: handle })
+    }
+}
+
 /// Live counters, readable while the engine runs (for a status line or tray).
 #[derive(Default)]
 pub struct Stats {

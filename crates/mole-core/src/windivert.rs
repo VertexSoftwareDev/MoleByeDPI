@@ -12,8 +12,8 @@ use std::sync::Arc;
 use windows_sys::Win32::Foundation::GetLastError;
 
 use crate::ffi::{
-    WinDivertAddress, WinDivertApi, INVALID_HANDLE_VALUE, WINDIVERT_FLAG_DROP, WINDIVERT_FLAG_SNIFF,
-    WINDIVERT_LAYER_NETWORK, WINDIVERT_SHUTDOWN_BOTH,
+    WinDivertAddress, WinDivertApi, INVALID_HANDLE_VALUE, WINDIVERT_FLAG_DROP, WINDIVERT_FLAG_RECV_ONLY,
+    WINDIVERT_FLAG_SNIFF, WINDIVERT_LAYER_NETWORK, WINDIVERT_SHUTDOWN_BOTH,
 };
 
 /// How a session treats the packets it matches.
@@ -25,8 +25,9 @@ pub enum Mode {
     /// Divert matching packets out of the stack. We must re-inject (`send`) each
     /// one or it is dropped. This is how the live filter engine rewrites traffic.
     Divert,
-    /// Divert and drop: matching packets vanish. Used to hold back one leg of a
-    /// connection (e.g. QUIC) so it falls back to a path we do handle.
+    /// Drop matching packets in the driver: they vanish and never reach us. Used
+    /// to hold back one leg of a connection (e.g. QUIC) so it falls back to a path
+    /// we do handle. No `recv` loop is needed — just hold the handle open.
     Drop,
 }
 
@@ -56,7 +57,9 @@ impl WinDivert {
         let flags = match mode {
             Mode::Sniff => WINDIVERT_FLAG_SNIFF,
             Mode::Divert => 0,
-            Mode::Drop => WINDIVERT_FLAG_SNIFF | WINDIVERT_FLAG_DROP,
+            // DROP silently discards matches in the driver; RECV_ONLY tells
+            // WinDivert we will never inject, so it needs no send capability.
+            Mode::Drop => WINDIVERT_FLAG_DROP | WINDIVERT_FLAG_RECV_ONLY,
         };
 
         let handle = unsafe {
