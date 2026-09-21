@@ -31,6 +31,10 @@ fn main() {
         "dns" => cmd_dns(rest),
         "probe" => cmd_probe(rest),
         "apply" => cmd_apply(rest),
+        "install" => cmd_install(rest),
+        "uninstall" => cmd_uninstall(),
+        "status" => cmd_status(),
+        "service-run" => cmd_service_run(),
         "help" | "--help" | "-h" => {
             print_help();
             0
@@ -58,6 +62,10 @@ fn print_help() {
          \x20                          measure which bypass strategy works on this line\n\
          \x20 mole apply [<strategy> | --auto [host ...]] [--block-quic]\n\
          \x20                          apply a strategy system-wide until stopped\n\
+         \x20 mole install [<strategy> | --auto [host ...]] [--block-quic]\n\
+         \x20                          install and start the self-healing service\n\
+         \x20 mole uninstall           stop and remove the service, clean up\n\
+         \x20 mole status              show the service state and saved strategy\n\
          \n\
          `probe` with no host uses a small set of commonly-blocked targets.\n\
          --all measures every strategy (for the community map); default stops at\n\
@@ -128,6 +136,22 @@ fn cmd_doctor() -> i32 {
                 all_ok &= check(false, "driver", &e.to_string());
             }
         }
+    }
+
+    // AV / rival-tool notes: name likely sources of friction rather than fail.
+    if let Some(av) = mole_core::service::interfering_antivirus() {
+        check(
+            true,
+            "antivirus",
+            &format!("{av} is running — its network shield can intercept TLS or block the driver; if Mole misbehaves, exclude it or pause the shield"),
+        );
+    }
+    if let Some(svc) = conflicting_dpi_service() {
+        check(
+            true,
+            "rival tool",
+            &format!("the '{svc}' service is running — it and Mole rewrite the same handshakes; keep only one"),
+        );
     }
 
     println!();
@@ -461,45 +485,55 @@ fn cmd_apply(args: &[String]) -> i32 {
         return 1;
     }
 
-    // Decide which strategy to apply: --auto probes, a label is parsed, and no
-    // argument reuses the saved config.
-    let strategy = if auto {
-        match choose_by_probe(&api, &hosts) {
-            Some(s) => s,
-            None => return 1,
-        }
-    } else if let Some(l) = label {
-        match Strategy::from_label(&l) {
-            Some(s) => s,
-            None => {
-                eprintln!("mole apply: '{l}' is not a known strategy (e.g. split:sni, fakesplit:ttl6:sni).");
-                return 1;
-            }
-        }
-    } else {
-        match Config::load() {
-            Some(c) => match Strategy::from_label(&c.strategy) {
-                Some(s) => {
-                    println!("Using saved strategy: {}", c.strategy);
-                    s
-                }
-                None => {
-                    eprintln!("mole apply: saved strategy '{}' is unreadable; run `mole apply --auto`.", c.strategy);
-                    return 1;
-                }
-            },
-            None => {
-                eprintln!("mole apply: no strategy given and none saved. Try `mole apply --auto`.");
-                return 1;
-            }
-        }
+    // Decide which strategy to apply, and remember it so a later bare `apply`
+    // (or the service) reuses it.
+    let (strategy, label) = match pick_strategy(&api, auto, &hosts, label, "apply") {
+        Some(pair) => pair,
+        None => return 1,
     };
+    if let Err(e) = Config::new(&label, "Cloudflare").quic(block_quic).save() {
+        eprintln!("  (could not save choice: {e})");
+    }
 
     run_engine(api, strategy, block_quic)
 }
 
-/// Probe the targets, pick the first strategy that works anywhere, and save it.
-fn choose_by_probe(api: &Arc<WinDivertApi>, hosts: &[String]) -> Option<Strategy> {
+/// Resolve the strategy for an `apply`/`install`: `--auto` probes for a winner, a
+/// label is parsed, and neither reuses the saved config. Returns the strategy and
+/// its label, or prints why it couldn't and returns None.
+fn pick_strategy(
+    api: &Arc<WinDivertApi>,
+    auto: bool,
+    hosts: &[String],
+    label: Option<String>,
+    cmd: &str,
+) -> Option<(Strategy, String)> {
+    if auto {
+        return choose_by_probe(api, hosts, cmd);
+    }
+    if let Some(l) = label {
+        return match Strategy::from_label(&l) {
+            Some(s) => Some((s, l)),
+            None => {
+                eprintln!("mole {cmd}: '{l}' is not a known strategy (e.g. split:sni, fakesplit:ttl6:sni).");
+                None
+            }
+        };
+    }
+    match Config::load().and_then(|c| Strategy::from_label(&c.strategy).map(|s| (s, c.strategy))) {
+        Some((s, l)) => {
+            println!("Using saved strategy: {l}");
+            Some((s, l))
+        }
+        None => {
+            eprintln!("mole {cmd}: no strategy given and none saved. Try `mole {cmd} --auto`.");
+            None
+        }
+    }
+}
+
+/// Probe the targets and pick the first strategy that works anywhere.
+fn choose_by_probe(api: &Arc<WinDivertApi>, hosts: &[String], cmd: &str) -> Option<(Strategy, String)> {
     let opts = ProbeOptions::default();
     let targets: Vec<String> = if hosts.is_empty() {
         DEFAULT_TARGETS.iter().map(|s| s.to_string()).collect()
@@ -511,17 +545,12 @@ fn choose_by_probe(api: &Arc<WinDivertApi>, hosts: &[String]) -> Option<Strategy
         let report = mole_probe::run(host, api.clone(), &opts);
         if let Some(winner) = &report.winner {
             println!("  {host}: '{winner}' works.");
-            let cfg = Config::new(winner, &opts.resolver.name);
-            if let Err(e) = cfg.save() {
-                eprintln!("  (could not save choice: {e})");
-            }
-            return Strategy::from_label(winner);
-        } else {
-            println!("  {host}: no strategy got through ({}).", verdict_word(&report.verdict));
+            return Strategy::from_label(winner).map(|s| (s, winner.clone()));
         }
+        println!("  {host}: no strategy got through ({}).", verdict_word(&report.verdict));
     }
     eprintln!(
-        "mole apply --auto: none of the strategies got through on the tested targets.\n\
+        "mole {cmd} --auto: none of the strategies got through on the tested targets.\n\
          This line may need a technique Mole doesn't have yet, or the block is IP-level."
     );
     None
@@ -598,6 +627,134 @@ fn run_engine(api: Arc<WinDivertApi>, strategy: Strategy, block_quic: bool) -> i
     engine.run(&stop);
     println!("\nStopped. Traffic restored.");
     0
+}
+
+fn cmd_install(args: &[String]) -> i32 {
+    let mut auto = false;
+    let mut block_quic = false;
+    let mut hosts: Vec<String> = Vec::new();
+    let mut label: Option<String> = None;
+    for a in args {
+        match a.as_str() {
+            "--auto" => auto = true,
+            "--block-quic" => block_quic = true,
+            other if other.starts_with("--") => {
+                eprintln!("mole install: unknown option '{other}'");
+                return 2;
+            }
+            other if auto => hosts.push(other.to_string()),
+            other => label = Some(other.to_string()),
+        }
+    }
+    if !is_elevated() {
+        eprintln!("mole install: needs administrator rights.");
+        return 1;
+    }
+    let api = match WinDivertApi::load() {
+        Ok(api) => Arc::new(api),
+        Err(e) => {
+            eprintln!("mole install: {e}");
+            return 1;
+        }
+    };
+    if let Some(svc) = conflicting_dpi_service() {
+        eprintln!(
+            "mole install: the '{svc}' service is running and would fight Mole.\n\
+             Remove or stop it first (`sc stop {svc}`)."
+        );
+        return 1;
+    }
+
+    let (_strategy, label) = match pick_strategy(&api, auto, &hosts, label, "install") {
+        Some(pair) => pair,
+        None => return 1,
+    };
+    let cfg = Config::new(&label, "Cloudflare").quic(block_quic);
+    if let Err(e) = cfg.save() {
+        eprintln!("mole install: could not save config: {e}");
+        return 1;
+    }
+    println!("Saved strategy '{label}'{}.", if block_quic { " (QUIC blocked)" } else { "" });
+
+    use mole_core::winservice;
+    if let Err(e) = winservice::install() {
+        eprintln!("mole install: {e}");
+        return 1;
+    }
+    match winservice::start() {
+        Ok(()) => {
+            println!("Service installed and started. It will run at boot and heal itself if it drops.");
+            0
+        }
+        Err(e) => {
+            eprintln!("mole install: installed, but could not start now: {e}");
+            1
+        }
+    }
+}
+
+fn cmd_uninstall() -> i32 {
+    if !is_elevated() {
+        eprintln!("mole uninstall: needs administrator rights.");
+        return 1;
+    }
+    use mole_core::winservice;
+    match winservice::uninstall() {
+        Ok(()) => {
+            // Leave nothing behind: remove the saved config too.
+            let _ = std::fs::remove_file(Config::path());
+            println!("Service stopped and removed. Nothing left behind; traffic flows normally.");
+            0
+        }
+        Err(e) => {
+            eprintln!("mole uninstall: {e}");
+            1
+        }
+    }
+}
+
+fn cmd_status() -> i32 {
+    use mole_core::winservice;
+    match winservice::query_state() {
+        Some(state) => println!("Service: {}", service_state_word(state)),
+        None => println!("Service: not installed"),
+    }
+    match Config::load() {
+        Some(c) => {
+            println!("Strategy: {}", c.strategy);
+            println!("Resolver: {}", c.resolver);
+            println!("Block QUIC: {}", if c.block_quic { "yes" } else { "no" });
+        }
+        None => println!("Strategy: none saved"),
+    }
+    if let Some(svc) = conflicting_dpi_service() {
+        println!("Note: '{svc}' is also running — it will fight Mole; keep only one.");
+    }
+    0
+}
+
+/// The SCM entry point (internal). Fails loudly only to the event log path; here
+/// we just hand control to the dispatcher.
+fn cmd_service_run() -> i32 {
+    use mole_core::winservice;
+    match winservice::run_dispatcher() {
+        Ok(()) => 0,
+        Err(_) => 1,
+    }
+}
+
+fn service_state_word(state: u32) -> &'static str {
+    // Values from Win32 Services (SERVICE_*).
+    match state {
+        1 => "stopped",
+        2 => "start pending",
+        3 => "stop pending",
+        4 => "running",
+        5 => "continue pending",
+        6 => "pause pending",
+        7 => "paused",
+        _ => "unknown",
+    }
 }
 
 fn print_report(r: &ProbeReport) {

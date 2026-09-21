@@ -18,6 +18,7 @@ pub mod packet;
 pub mod service;
 pub mod strategy;
 pub mod windivert;
+pub mod winservice;
 
 pub use config::Config;
 pub use engine::{FilterEngine, QuicBlocker};

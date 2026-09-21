@@ -15,6 +15,9 @@ pub struct Config {
     pub strategy: String,
     /// Resolver name: `"Cloudflare"` or `"Google"`.
     pub resolver: String,
+    /// Hold QUIC back so browsers fall onto TCP. Off unless the user asked.
+    #[serde(default)]
+    pub block_quic: bool,
 }
 
 impl Config {
@@ -22,7 +25,14 @@ impl Config {
         Config {
             strategy: strategy.to_string(),
             resolver: resolver.to_string(),
+            block_quic: false,
         }
+    }
+
+    /// Set whether the service should also block QUIC.
+    pub fn quic(mut self, on: bool) -> Config {
+        self.block_quic = on;
+        self
     }
 
     /// `%ProgramData%\Mole\config.json`, falling back to the executable's folder

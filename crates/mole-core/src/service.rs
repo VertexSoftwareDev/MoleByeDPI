@@ -50,3 +50,27 @@ pub fn conflicting_dpi_service() -> Option<&'static str> {
         .copied()
         .find(|name| is_service_running(name))
 }
+
+/// Antivirus products whose network shields are known to intercept TLS or fight
+/// packet-level tools like WinDivert. Detecting one lets Mole *name* the likely
+/// cause instead of failing silently — the plan's AV-conflict rule.
+pub const KNOWN_AV_SERVICES: &[(&str, &str)] = &[
+    ("avast! Antivirus", "Avast"),
+    ("aswbIDSAgent", "Avast"),
+    ("AVG Antivirus", "AVG"),
+    ("avgIDSAgent", "AVG"),
+    ("AVP", "Kaspersky"),
+    ("klnagent", "Kaspersky"),
+    ("ekrn", "ESET"),
+    ("SepMasterService", "Symantec"),
+    ("mfefire", "McAfee"),
+];
+
+/// The display name of a running antivirus whose network shield may intercept or
+/// block Mole's traffic, if one is detected.
+pub fn interfering_antivirus() -> Option<&'static str> {
+    KNOWN_AV_SERVICES
+        .iter()
+        .find(|(svc, _)| is_service_running(svc))
+        .map(|(_, name)| *name)
+}
