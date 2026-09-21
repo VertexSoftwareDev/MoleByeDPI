@@ -95,7 +95,14 @@ mole apply --auto [--block-quic]   # probe, apply, and keep applying until Ctrl+
 
 `mole-gui` is a small window over the same commands: it shows the service state,
 the chosen strategy, and any antivirus or rival tool in the way, with one button
-to measure-and-protect (it asks for administrator through UAC).
+to measure-and-protect (it asks for administrator through UAC), a live "is this
+site blocked right now?" checker, light/dark and TR/EN, and a system-tray icon
+(closing the window hides it to the tray).
+
+**Self-healing:** the service quietly re-measures if its strategy stops working.
+A health monitor watches a normally-blocked site through the running engine; if it
+goes blocked, the operator has likely changed something, so the service re-probes
+and switches to the new winning strategy on its own — no `.bat`, no reinstall.
 
 `doctor` on this machine, with the driver installed and one HTTPS packet caught:
 

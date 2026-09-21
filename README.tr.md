@@ -67,7 +67,13 @@ mole version             # sürümü yazar
 
 `mole-gui`, aynı komutların üstünde küçük bir penceredir: servis durumunu, seçili
 stratejiyi ve yoldaki antivirüs/rakip aracı gösterir; tek tuşla ölç-ve-koru
-(yönetici iznini UAC ile ister).
+(yönetici iznini UAC ile ister), canlı "bu site şu an engelli mi?" testi, açık/koyu
+ve TR/EN, ve bir sistem tepsisi ikonu (pencereyi kapatınca tepsiye küçülür).
+
+**Kendini onarma:** strateji çalışmayı bırakırsa servis sessizce yeniden ölçer.
+Bir sağlık izleyicisi, çalışan motorun üstünden normalde engelli bir siteyi izler;
+o site engellenirse operatör bir şey değiştirmiş demektir, servis yeniden ölçüp yeni
+çalışan stratejiye kendi geçer — `.bat` yok, yeniden kurulum yok.
 
 ## GoodByeDPI ile birlikte çalıştırma
 
