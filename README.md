@@ -18,23 +18,31 @@ Early. Building phase by phase; each phase leaves something that works on its ow
 |-------|------------------|-------|
 | **0. Foundation** | WinDivert integration, packet capture proof, admin/driver lifecycle | **done** |
 | **1. Probe (CLI)** | Try the strategies, find and report the winner, say *why* | **done** |
-| **2. Filter engine (core)** | The desync strategies as pure, tested transforms, applied live during a probe | **done** (battery to grow) |
+| **2. Filter engine** | Desync strategies as pure, tested transforms; the live system-wide engine and `apply` | **done** (battery to grow) |
 | **3. DNS (DoH)** | Get past DNS hijacking; correct resolution for the probe | **done** |
-| 4. Service + tray | Self-healing service, status icon, AV-conflict detection | next |
-| 5. UDP/QUIC | The untouched half of the connection | — |
-| 6. Diagnostics + report | "Why it failed", opt-out community report | — |
-| 7. Polish | GUI, bilingual README, release flow | — |
+| **4. Service** | Self-healing Windows service, AV-conflict detection, `install`/`uninstall`/`status` | **done** |
+| **5. UDP/QUIC** | Opt-in QUIC blocking to force TCP fallback (full desync later) | **first step done** |
+| **6. Diagnostics + report** | "Why it failed" classification, privacy-preserving community report | **done** |
+| **7. Polish** | Status-and-control GUI, bilingual README, release flow | **in progress** |
 
-Phases 1–3 share one engine: the probe applies each strategy through the *same*
-`mole-core` code the live filter will use, so what it measures is what production
-does. See [docs/findings.md](docs/findings.md) for what real lines actually did.
+Every phase shares one engine: the probe applies each strategy through the *same*
+`mole-core` code the live filter uses, so what it measures is what production does.
+See [docs/findings.md](docs/findings.md) for what real lines actually did.
+
+> **Live verification pending.** The measurement machinery, DoH, and parsers are
+> tested and proven on this line. The service install/start/stop, `apply`, and the
+> benign-decoy + TTL-sweep re-measurement still need one run in an elevated
+> session — the build was written after admin rights lapsed here.
 
 ## Layout
 
-- `mole-core` — the packet layer: WinDivert wrapper, IPv4/TCP/TLS inspection, elevation check.
-- `mole-dns` — DoH resolver (phase 3).
-- `mole-probe` — measurement engine (phase 1).
-- `mole-cli` — command line: `doctor`, `capture`, later `probe`/`apply`.
+- `mole-core` — the packet layer: WinDivert wrapper, IPv4/TCP/TLS inspection, the
+  desync strategies, the live filter engine, config, and the Windows service.
+- `mole-dns` — DoH resolver.
+- `mole-probe` — measurement engine and the community report.
+- `mole-cli` — the `mole` command line (`doctor`, `capture`, `dns`, `probe`,
+  `apply`, `install`, `uninstall`, `status`, `report`).
+- `mole-gui` — the status-and-control window (thin front over the CLI).
 - `vendor/windivert` — the signed WinDivert 2.x DLL and driver (LGPL, see its LICENSE).
 
 ## Build & run
@@ -62,6 +70,24 @@ reports one of: *not blocked*, *bypass found* (naming the winning strategy), *IP
 block* (a local tool can't help), or *DPI block, no bypass yet* — and tells the
 difference by measuring, never guessing. A running GoodByeDPI/zapret/ByeDPI
 service rewrites the same handshakes, so `probe` warns and you should stop it first.
+
+To measure and then stay protected in the background:
+
+```
+mole install --auto      # probe, pick the winner, install the self-healing service
+mole status              # what's running, and the chosen strategy
+mole uninstall           # stop and remove, leaving nothing behind
+```
+
+Or, without a service, hold a strategy for one session:
+
+```
+mole apply --auto [--block-quic]   # probe, apply, and keep applying until Ctrl+C
+```
+
+`mole-gui` is a small window over the same commands: it shows the service state,
+the chosen strategy, and any antivirus or rival tool in the way, with one button
+to measure-and-protect (it asks for administrator through UAC).
 
 `doctor` on this machine, with the driver installed and one HTTPS packet caught:
 

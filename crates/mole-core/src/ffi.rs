@@ -74,7 +74,8 @@ pub const WINDIVERT_SHUTDOWN_BOTH: c_int = 0x3;
 pub const INVALID_HANDLE_VALUE: isize = -1;
 
 type FnOpen = unsafe extern "system" fn(*const c_char, c_int, i16, u64) -> isize;
-type FnRecv = unsafe extern "system" fn(isize, *mut u8, u32, *mut u32, *mut WinDivertAddress) -> i32;
+type FnRecv =
+    unsafe extern "system" fn(isize, *mut u8, u32, *mut u32, *mut WinDivertAddress) -> i32;
 type FnSend =
     unsafe extern "system" fn(isize, *const u8, u32, *mut u32, *const WinDivertAddress) -> i32;
 type FnClose = unsafe extern "system" fn(isize) -> i32;
@@ -106,7 +107,13 @@ impl WinDivertApi {
 
         // ALTERED_SEARCH_PATH so the DLL's own directory is searched for its
         // dependencies, matching how the loader resolves a normal executable.
-        let module = unsafe { LoadLibraryExW(wide.as_ptr(), std::ptr::null_mut(), LOAD_WITH_ALTERED_SEARCH_PATH) };
+        let module = unsafe {
+            LoadLibraryExW(
+                wide.as_ptr(),
+                std::ptr::null_mut(),
+                LOAD_WITH_ALTERED_SEARCH_PATH,
+            )
+        };
         if module.is_null() {
             return Err(LoadError::DllNotLoaded {
                 path: dll,
@@ -132,9 +139,9 @@ impl WinDivertApi {
                 send: std::mem::transmute::<*const (), FnSend>(load("WinDivertSend")?),
                 close: std::mem::transmute::<*const (), FnClose>(load("WinDivertClose")?),
                 shutdown: std::mem::transmute::<*const (), FnShutdown>(load("WinDivertShutdown")?),
-                calc_checksums: std::mem::transmute::<*const (), FnCalcChecksums>(
-                    load("WinDivertHelperCalcChecksums")?,
-                ),
+                calc_checksums: std::mem::transmute::<*const (), FnCalcChecksums>(load(
+                    "WinDivertHelperCalcChecksums",
+                )?),
             }
         };
         Ok(api)
@@ -202,7 +209,10 @@ impl std::fmt::Display for LoadError {
                 path.display()
             ),
             LoadError::MissingSymbol(name) => {
-                write!(f, "WinDivert.dll is missing {name}; it is an unexpected version")
+                write!(
+                    f,
+                    "WinDivert.dll is missing {name}; it is an unexpected version"
+                )
             }
         }
     }

@@ -56,13 +56,22 @@ pub enum Decoy {
 pub enum Strategy {
     Passthrough,
     /// Split into two segments at `cut`.
-    Split { cut: Cut },
+    Split {
+        cut: Cut,
+    },
     /// Split at `cut` but send the second segment first (out-of-order).
-    Disorder { cut: Cut },
+    Disorder {
+        cut: Cut,
+    },
     /// Send a decoy ClientHello, then the real one untouched.
-    Fake { decoy: Decoy },
+    Fake {
+        decoy: Decoy,
+    },
     /// Send a decoy, then split the real ClientHello.
-    FakeSplit { decoy: Decoy, cut: Cut },
+    FakeSplit {
+        decoy: Decoy,
+        cut: Cut,
+    },
 }
 
 /// TTL values the sweep tries, low first. A home line's DPI usually sits a few
@@ -116,17 +125,32 @@ impl Strategy {
             Strategy::Split { cut: Cut::Sni },
             Strategy::Split { cut: Cut::Fixed(2) },
             Strategy::Disorder { cut: Cut::Sni },
-            Strategy::Fake { decoy: Decoy::WrongSeq(10_000) },
-            Strategy::Fake { decoy: Decoy::BadChecksum },
+            Strategy::Fake {
+                decoy: Decoy::WrongSeq(10_000),
+            },
+            Strategy::Fake {
+                decoy: Decoy::BadChecksum,
+            },
         ];
         // TTL sweep: find the hop where the DPI sits without knowing it in advance.
         for ttl in TTL_SWEEP {
-            b.push(Strategy::Fake { decoy: Decoy::LowTtl(*ttl) });
+            b.push(Strategy::Fake {
+                decoy: Decoy::LowTtl(*ttl),
+            });
         }
-        b.push(Strategy::FakeSplit { decoy: Decoy::WrongSeq(10_000), cut: Cut::Sni });
-        b.push(Strategy::FakeSplit { decoy: Decoy::BadChecksum, cut: Cut::Sni });
+        b.push(Strategy::FakeSplit {
+            decoy: Decoy::WrongSeq(10_000),
+            cut: Cut::Sni,
+        });
+        b.push(Strategy::FakeSplit {
+            decoy: Decoy::BadChecksum,
+            cut: Cut::Sni,
+        });
         for ttl in TTL_SWEEP {
-            b.push(Strategy::FakeSplit { decoy: Decoy::LowTtl(*ttl), cut: Cut::Sni });
+            b.push(Strategy::FakeSplit {
+                decoy: Decoy::LowTtl(*ttl),
+                cut: Cut::Sni,
+            });
         }
         b
     }
@@ -233,11 +257,23 @@ fn split(orig: &Packet, view: &TcpView, cut: Cut, disorder: bool) -> Vec<Emit> {
     let seq = read_seq(&orig.data, view.tcp_offset);
 
     let first = build_segment(&orig.data, hdr, &payload[..off], seq, orig.addr);
-    let second = build_segment(&orig.data, hdr, &payload[off..], seq.wrapping_add(off as u32), orig.addr);
+    let second = build_segment(
+        &orig.data,
+        hdr,
+        &payload[off..],
+        seq.wrapping_add(off as u32),
+        orig.addr,
+    );
 
     let (a, b) = (
-        Emit { packet: first, fix_checksums: true },
-        Emit { packet: second, fix_checksums: true },
+        Emit {
+            packet: first,
+            fix_checksums: true,
+        },
+        Emit {
+            packet: second,
+            fix_checksums: true,
+        },
     );
     if disorder {
         vec![b, a]
@@ -312,7 +348,10 @@ fn make_decoy(orig: &Packet, view: &TcpView, decoy: Decoy) -> Option<Emit> {
             write_seq(&mut data, ihl, real_seq);
             data[8] = ttl;
             Some(Emit {
-                packet: Packet { data, addr: orig.addr },
+                packet: Packet {
+                    data,
+                    addr: orig.addr,
+                },
                 fix_checksums: true,
             })
         }
@@ -328,7 +367,10 @@ fn make_decoy(orig: &Packet, view: &TcpView, decoy: Decoy) -> Option<Emit> {
             let ip_sum = crate::checksum::ipv4_checksum(&data[..ihl]);
             data[10..12].copy_from_slice(&ip_sum.to_be_bytes());
             Some(Emit {
-                packet: Packet { data, addr: orig.addr },
+                packet: Packet {
+                    data,
+                    addr: orig.addr,
+                },
                 fix_checksums: false, // keep our deliberately-wrong TCP checksum
             })
         }
@@ -337,7 +379,10 @@ fn make_decoy(orig: &Packet, view: &TcpView, decoy: Decoy) -> Option<Emit> {
             // a filter that inspects every packet still sees the benign name.
             write_seq(&mut data, ihl, real_seq.wrapping_sub(offset));
             Some(Emit {
-                packet: Packet { data, addr: orig.addr },
+                packet: Packet {
+                    data,
+                    addr: orig.addr,
+                },
                 fix_checksums: true,
             })
         }
@@ -406,7 +451,13 @@ mod tests {
         data[ihl + 12] = 0x50; // data offset 5
         data[ihl + tcphl..].copy_from_slice(payload);
         let view = TcpView::parse(&data).unwrap();
-        (Packet { data, addr: WinDivertAddress::zeroed() }, view)
+        (
+            Packet {
+                data,
+                addr: WinDivertAddress::zeroed(),
+            },
+            view,
+        )
     }
 
     #[test]
@@ -440,7 +491,10 @@ mod tests {
     #[test]
     fn bad_checksum_decoy_is_marked_no_fix_and_actually_wrong() {
         let (pkt, view) = packet_with(b"hello handshake bytes");
-        let out = Strategy::Fake { decoy: Decoy::BadChecksum }.apply(&pkt, &view);
+        let out = Strategy::Fake {
+            decoy: Decoy::BadChecksum,
+        }
+        .apply(&pkt, &view);
         assert_eq!(out.len(), 2);
         assert!(!out[0].fix_checksums, "decoy must not be re-fixed on send");
         // The decoy's stored TCP checksum should not equal the correct one.
@@ -469,9 +523,15 @@ mod tests {
         data[ihl + 12] = 0x50;
         data[ihl + 20..].copy_from_slice(&real);
         let view = TcpView::parse(&data).unwrap();
-        let pkt = Packet { data, addr: WinDivertAddress::zeroed() };
+        let pkt = Packet {
+            data,
+            addr: WinDivertAddress::zeroed(),
+        };
 
-        let out = Strategy::Fake { decoy: Decoy::LowTtl(5) }.apply(&pkt, &view);
+        let out = Strategy::Fake {
+            decoy: Decoy::LowTtl(5),
+        }
+        .apply(&pkt, &view);
         let decoy_payload = &out[0].packet.data[40..];
         assert!(
             find_sni(decoy_payload).map(|(h, _)| h) == Some("www.google.com".to_string()),
@@ -486,7 +546,10 @@ mod tests {
     #[test]
     fn low_ttl_decoy_sets_ttl() {
         let (pkt, view) = packet_with(b"hello");
-        let out = Strategy::Fake { decoy: Decoy::LowTtl(4) }.apply(&pkt, &view);
+        let out = Strategy::Fake {
+            decoy: Decoy::LowTtl(4),
+        }
+        .apply(&pkt, &view);
         assert_eq!(out[0].packet.data[8], 4);
         assert!(out[0].fix_checksums);
     }
@@ -494,7 +557,10 @@ mod tests {
     #[test]
     fn wrong_seq_decoy_moves_sequence_below_real() {
         let (pkt, view) = packet_with(b"hello");
-        let out = Strategy::Fake { decoy: Decoy::WrongSeq(10_000) }.apply(&pkt, &view);
+        let out = Strategy::Fake {
+            decoy: Decoy::WrongSeq(10_000),
+        }
+        .apply(&pkt, &view);
         // Real seq is 1000; decoy sits 10_000 below it (wrapping).
         let d = &out[0].packet.data;
         let decoy_seq = u32::from_be_bytes([d[24], d[25], d[26], d[27]]);
@@ -510,7 +576,10 @@ mod tests {
             let round = Strategy::from_label(&s.label());
             assert_eq!(round.as_ref(), Some(&s), "{} did not round-trip", s.label());
         }
-        assert_eq!(Strategy::from_label("passthrough"), Some(Strategy::Passthrough));
+        assert_eq!(
+            Strategy::from_label("passthrough"),
+            Some(Strategy::Passthrough)
+        );
         assert_eq!(Strategy::from_label("nonsense"), None);
     }
 

@@ -5,6 +5,7 @@ members = [
     "crates/mole-dns",
     "crates/mole-probe",
     "crates/mole-cli",
+    "crates/mole-gui",
 ]
 
 [workspace.package]

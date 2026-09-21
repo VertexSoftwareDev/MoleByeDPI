@@ -56,8 +56,8 @@ impl Resolver {
     /// POST a raw DNS message and return the response DNS message bytes.
     fn post(&self, dns_message: &[u8]) -> Result<Vec<u8>, DnsError> {
         let config = tls_config()?;
-        let server_name = ServerName::try_from(self.sni.clone())
-            .map_err(|_| DnsError::BadResolverName)?;
+        let server_name =
+            ServerName::try_from(self.sni.clone()).map_err(|_| DnsError::BadResolverName)?;
         let mut conn = rustls::ClientConnection::new(Arc::new(config), server_name)
             .map_err(|e| DnsError::Tls(e.to_string()))?;
         let mut sock = TcpStream::connect_timeout(&self.addr, Duration::from_secs(6))
@@ -161,12 +161,12 @@ fn http_body(raw: &[u8]) -> Result<Vec<u8>, DnsError> {
 fn dechunk(mut b: &[u8]) -> Result<Vec<u8>, DnsError> {
     let mut out = Vec::new();
     loop {
-        let nl = b.windows(2).position(|w| w == b"\r\n").ok_or(DnsError::BadHttp)?;
-        let size = usize::from_str_radix(
-            String::from_utf8_lossy(&b[..nl]).trim(),
-            16,
-        )
-        .map_err(|_| DnsError::BadHttp)?;
+        let nl = b
+            .windows(2)
+            .position(|w| w == b"\r\n")
+            .ok_or(DnsError::BadHttp)?;
+        let size = usize::from_str_radix(String::from_utf8_lossy(&b[..nl]).trim(), 16)
+            .map_err(|_| DnsError::BadHttp)?;
         b = &b[nl + 2..];
         if size == 0 {
             break;

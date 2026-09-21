@@ -1,0 +1,33 @@
+name: Release
+
+# Tag a version (e.g. v0.1.0) to build a packaged zip: the CLI, the GUI, and the
+# signed WinDivert driver/DLL side by side, ready to unzip and run elevated.
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal
+      - name: Build release
+        run: cargo build --release --all
+      - name: Stage package
+        shell: pwsh
+        run: |
+          $out = "mole-${{ github.ref_name }}"
+          New-Item -ItemType Directory -Force $out | Out-Null
+          Copy-Item target/release/mole.exe      $out/
+          Copy-Item target/release/mole-gui.exe  $out/
+          Copy-Item vendor/windivert/x64/WinDivert.dll   $out/
+          Copy-Item vendor/windivert/x64/WinDivert64.sys $out/
+          Copy-Item README.md, README.tr.md, LICENSE     $out/
+          Copy-Item vendor/windivert/LICENSE $out/WinDivert-LICENSE.txt
+          Compress-Archive -Path $out/* -DestinationPath "$out.zip"
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: mole-${{ github.ref_name }}.zip

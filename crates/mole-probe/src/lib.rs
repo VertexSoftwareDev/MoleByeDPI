@@ -275,7 +275,8 @@ fn attempt(
         Reach::TlsReply => (outcome, "server replied — the handshake got through".into()),
         Reach::Silent => (
             outcome,
-            "TCP opened but the server never replied after the ClientHello (dropped by the filter)".into(),
+            "TCP opened but the server never replied after the ClientHello (dropped by the filter)"
+                .into(),
         ),
         Reach::Reset => (
             outcome,
@@ -285,7 +286,10 @@ fn attempt(
             outcome,
             "could not open TCP to the address — an IP-level block or the host is down".into(),
         ),
-        Reach::NotTls => (outcome, "got a non-TLS reply — possibly an injected block".into()),
+        Reach::NotTls => (
+            outcome,
+            "got a non-TLS reply — possibly an injected block".into(),
+        ),
     }
 }
 

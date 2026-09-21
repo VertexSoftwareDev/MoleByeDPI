@@ -12,8 +12,9 @@ use std::sync::Arc;
 use windows_sys::Win32::Foundation::GetLastError;
 
 use crate::ffi::{
-    WinDivertAddress, WinDivertApi, INVALID_HANDLE_VALUE, WINDIVERT_FLAG_DROP, WINDIVERT_FLAG_RECV_ONLY,
-    WINDIVERT_FLAG_SNIFF, WINDIVERT_LAYER_NETWORK, WINDIVERT_SHUTDOWN_BOTH,
+    WinDivertAddress, WinDivertApi, INVALID_HANDLE_VALUE, WINDIVERT_FLAG_DROP,
+    WINDIVERT_FLAG_RECV_ONLY, WINDIVERT_FLAG_SNIFF, WINDIVERT_LAYER_NETWORK,
+    WINDIVERT_SHUTDOWN_BOTH,
 };
 
 /// How a session treats the packets it matches.
@@ -62,9 +63,8 @@ impl WinDivert {
             Mode::Drop => WINDIVERT_FLAG_DROP | WINDIVERT_FLAG_RECV_ONLY,
         };
 
-        let handle = unsafe {
-            (api.open)(c_filter.as_ptr(), WINDIVERT_LAYER_NETWORK, priority, flags)
-        };
+        let handle =
+            unsafe { (api.open)(c_filter.as_ptr(), WINDIVERT_LAYER_NETWORK, priority, flags) };
         if handle == INVALID_HANDLE_VALUE {
             return Err(WinDivertError::from_last_error(filter));
         }
@@ -180,7 +180,10 @@ pub enum WinDivertError {
     /// The filter string contained an interior NUL.
     BadFilter,
     /// `WinDivertOpen` failed. `code` is `GetLastError`.
-    Open { code: u32, hint: &'static str },
+    Open {
+        code: u32,
+        hint: &'static str,
+    },
     Recv(u32),
     Send(u32),
 }

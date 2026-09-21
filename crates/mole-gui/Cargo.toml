@@ -1,0 +1,25 @@
+[package]
+name = "mole-gui"
+description = "Mole's status-and-control window: measure the line, protect, and see the service's state at a glance."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mole-gui"
+path = "src/main.rs"
+
+[dependencies]
+mole-core = { path = "../mole-core" }
+# `glow` rather than `wgpu`: a plain control panel, a fast start, no Direct3D
+# stack — the same choice Burrow made.
+eframe = { version = "0.36", default-features = false, features = [
+    "glow",
+    "default_fonts",
+    "persistence",
+] }
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }

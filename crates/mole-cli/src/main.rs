@@ -1,13 +1,12 @@
 //! `mole` command line.
 //!
-//! Phase 0 ships two commands:
-//!   * `doctor`  — is the ground ready? admin rights, the WinDivert DLL/driver,
-//!                 and a live capture that proves packets can be intercepted.
-//!   * `capture` — sniff TLS ClientHello packets and print who they are going to,
-//!                 including the SNI, without touching the traffic (SNIFF mode).
+//! Commands:
+//! - `doctor` — is the ground ready? admin, the WinDivert DLL/driver, a live capture.
+//! - `capture` — sniff ClientHellos and print their SNI, traffic untouched.
+//! - `dns` — resolve over DoH. `probe` — measure the line. `apply` — shape live.
+//! - `install`/`uninstall`/`status` — the self-healing service. `report` — the map.
 //!
-//! Later phases add `probe`, `apply` and `service`. The arg handling is hand
-//! rolled to keep the binary lean and dependency-free.
+//! Arg handling is hand rolled to keep the binary lean and dependency-free.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -16,7 +15,9 @@ use std::time::Duration;
 use mole_core::admin::is_elevated;
 use mole_core::packet::find_sni;
 use mole_core::service::conflicting_dpi_service;
-use mole_core::{Config, FilterEngine, Mode, QuicBlocker, Strategy, TcpView, WinDivert, WinDivertApi};
+use mole_core::{
+    Config, FilterEngine, Mode, QuicBlocker, Strategy, TcpView, WinDivert, WinDivertApi,
+};
 use mole_dns::Resolver;
 use mole_probe::{ProbeOptions, ProbeReport, Verdict};
 
@@ -185,17 +186,22 @@ fn wait_one(handle: Arc<WinDivert>, budget: Duration) -> Option<String> {
                 let Some(view) = TcpView::parse(&pkt.data) else {
                     return Some("captured a non-IPv4 packet".to_string());
                 };
-                // Prefer a packet we can describe by SNI; keep waiting past bare
-                // ACKs until the budget's shutdown ends the loop.
-                if let Some((host, _)) = find_sni(view.payload(&pkt.data)) {
-                    let d = view.dst;
-                    return Some(format!(
-                        "{}.{}.{}.{}:{}  SNI {host}",
-                        d[0], d[1], d[2], d[3], view.dst_port
-                    ));
+                let payload = view.payload(&pkt.data);
+                // Skip bare ACKs (no payload) and keep waiting for a data packet
+                // we can actually describe, until the budget's shutdown ends it.
+                if payload.is_empty() {
+                    continue;
                 }
                 let d = view.dst;
-                return Some(format!("{}.{}.{}.{}:{}", d[0], d[1], d[2], d[3], view.dst_port));
+                return Some(match find_sni(payload) {
+                    Some((host, _)) => {
+                        format!(
+                            "{}.{}.{}.{}:{}  SNI {host}",
+                            d[0], d[1], d[2], d[3], view.dst_port
+                        )
+                    }
+                    None => format!("{}.{}.{}.{}:{}", d[0], d[1], d[2], d[3], view.dst_port),
+                });
             }
             Ok(None) => return None, // budget elapsed, handle shut down
             Err(_) => return None,
@@ -220,15 +226,24 @@ fn cmd_capture(args: &[String]) -> i32 {
         match args[i].as_str() {
             "--port" => {
                 i += 1;
-                opts.port = args.get(i).and_then(|s| s.parse().ok()).unwrap_or(opts.port);
+                opts.port = args
+                    .get(i)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(opts.port);
             }
             "--count" => {
                 i += 1;
-                opts.count = args.get(i).and_then(|s| s.parse().ok()).unwrap_or(opts.count);
+                opts.count = args
+                    .get(i)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(opts.count);
             }
             "--seconds" => {
                 i += 1;
-                opts.seconds = args.get(i).and_then(|s| s.parse().ok()).unwrap_or(opts.seconds);
+                opts.seconds = args
+                    .get(i)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(opts.seconds);
             }
             other => {
                 eprintln!("mole capture: unknown option '{other}'");
@@ -309,7 +324,12 @@ fn cmd_capture(args: &[String]) -> i32 {
                     ),
                     None => println!(
                         "{seen:>3}. {}.{}.{}.{}:{}  ({} payload bytes, no SNI)",
-                        d[0], d[1], d[2], d[3], view.dst_port, payload.len()
+                        d[0],
+                        d[1],
+                        d[2],
+                        d[3],
+                        view.dst_port,
+                        payload.len()
                     ),
                 }
             }
@@ -537,7 +557,11 @@ fn pick_strategy(
 }
 
 /// Probe the targets and pick the first strategy that works anywhere.
-fn choose_by_probe(api: &Arc<WinDivertApi>, hosts: &[String], cmd: &str) -> Option<(Strategy, String)> {
+fn choose_by_probe(
+    api: &Arc<WinDivertApi>,
+    hosts: &[String],
+    cmd: &str,
+) -> Option<(Strategy, String)> {
     let opts = ProbeOptions::default();
     let targets: Vec<String> = if hosts.is_empty() {
         DEFAULT_TARGETS.iter().map(|s| s.to_string()).collect()
@@ -551,7 +575,10 @@ fn choose_by_probe(api: &Arc<WinDivertApi>, hosts: &[String], cmd: &str) -> Opti
             println!("  {host}: '{winner}' works.");
             return Strategy::from_label(winner).map(|s| (s, winner.clone()));
         }
-        println!("  {host}: no strategy got through ({}).", verdict_word(&report.verdict));
+        println!(
+            "  {host}: no strategy got through ({}).",
+            verdict_word(&report.verdict)
+        );
     }
     eprintln!(
         "mole {cmd} --auto: none of the strategies got through on the tested targets.\n\
@@ -678,7 +705,10 @@ fn cmd_install(args: &[String]) -> i32 {
         eprintln!("mole install: could not save config: {e}");
         return 1;
     }
-    println!("Saved strategy '{label}'{}.", if block_quic { " (QUIC blocked)" } else { "" });
+    println!(
+        "Saved strategy '{label}'{}.",
+        if block_quic { " (QUIC blocked)" } else { "" }
+    );
 
     use mole_core::winservice;
     if let Err(e) = winservice::install() {
@@ -687,7 +717,9 @@ fn cmd_install(args: &[String]) -> i32 {
     }
     match winservice::start() {
         Ok(()) => {
-            println!("Service installed and started. It will run at boot and heal itself if it drops.");
+            println!(
+                "Service installed and started. It will run at boot and heal itself if it drops."
+            );
             0
         }
         Err(e) => {
@@ -781,10 +813,15 @@ fn cmd_report(args: &[String]) -> i32 {
         }
     };
     if let Some(svc) = conflicting_dpi_service() {
-        println!("WARNING: '{svc}' is running and will skew results; stop it first (`sc stop {svc}`).\n");
+        println!(
+            "WARNING: '{svc}' is running and will skew results; stop it first (`sc stop {svc}`).\n"
+        );
     }
 
-    println!("Measuring every strategy across {} target(s)...", hosts.len());
+    println!(
+        "Measuring every strategy across {} target(s)...",
+        hosts.len()
+    );
     let report = mole_probe::community_report(&hosts, api, operator);
     match serde_json::to_string_pretty(&report) {
         Ok(s) => {
@@ -792,11 +829,7 @@ fn cmd_report(args: &[String]) -> i32 {
                 eprintln!("mole report: could not write {out}: {e}");
                 return 1;
             }
-            let bypassed = report
-                .targets
-                .iter()
-                .filter(|t| t.winner.is_some())
-                .count();
+            let bypassed = report.targets.iter().filter(|t| t.winner.is_some()).count();
             println!(
                 "Wrote {out}. {} of {} target(s) bypassed. It contains only technical data — \n\
                  safe to share for the community map.",
@@ -857,7 +890,10 @@ fn print_report(r: &ProbeReport) {
         Verdict::BypassFound => {
             for res in &r.results {
                 let mark = if res.passed { "✓" } else { "·" };
-                println!("    {mark} {:<22} {} ({} ms)", res.strategy, res.detail, res.elapsed_ms);
+                println!(
+                    "    {mark} {:<22} {} ({} ms)",
+                    res.strategy, res.detail, res.elapsed_ms
+                );
             }
             if let Some(w) = &r.winner {
                 println!("  verdict: BYPASS FOUND — use `{w}` on this line.");
@@ -865,7 +901,10 @@ fn print_report(r: &ProbeReport) {
         }
         Verdict::NoBypass => {
             for res in &r.results {
-                println!("    · {:<22} {} ({} ms)", res.strategy, res.detail, res.elapsed_ms);
+                println!(
+                    "    · {:<22} {} ({} ms)",
+                    res.strategy, res.detail, res.elapsed_ms
+                );
             }
             println!("  verdict: DPI blocks it and none of the strategies got through.");
             println!("           control: {}", r.control_detail);
@@ -894,9 +933,8 @@ fn ctrlc<F: Fn() + Send + Sync + 'static>(f: F) -> Result<(), ()> {
         1 // handled
     }
 
-    let ok = unsafe {
-        windows_sys::Win32::System::Console::SetConsoleCtrlHandler(Some(handler), 1)
-    };
+    let ok =
+        unsafe { windows_sys::Win32::System::Console::SetConsoleCtrlHandler(Some(handler), 1) };
     if ok == 0 {
         Err(())
     } else {

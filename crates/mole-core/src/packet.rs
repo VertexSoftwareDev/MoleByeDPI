@@ -125,7 +125,8 @@ pub fn find_sni(payload: &[u8]) -> Option<(String, usize)> {
             if name_start + name_len > payload.len() {
                 return None;
             }
-            let host = String::from_utf8_lossy(&payload[name_start..name_start + name_len]).into_owned();
+            let host =
+                String::from_utf8_lossy(&payload[name_start..name_start + name_len]).into_owned();
             return Some((host, name_start));
         }
         p += ext_len;

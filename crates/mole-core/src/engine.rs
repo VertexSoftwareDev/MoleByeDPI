@@ -53,7 +53,10 @@ impl FilterEngine {
     /// Open the system-wide handle and get ready to run. Priority 1000 puts Mole
     /// ahead of a lower-priority tool, though two handshake rewriters still
     /// conflict and Mole warns about that elsewhere.
-    pub fn start(api: Arc<WinDivertApi>, strategy: Strategy) -> Result<FilterEngine, WinDivertError> {
+    pub fn start(
+        api: Arc<WinDivertApi>,
+        strategy: Strategy,
+    ) -> Result<FilterEngine, WinDivertError> {
         let handle = WinDivert::open(api, "outbound and tcp.DstPort == 443", Mode::Divert, 1000)?;
         Ok(FilterEngine {
             handle: Arc::new(handle),

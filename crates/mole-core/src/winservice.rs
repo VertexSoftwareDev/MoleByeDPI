@@ -18,13 +18,13 @@ use windows_sys::Win32::Foundation::{ERROR_SERVICE_DOES_NOT_EXIST, NO_ERROR};
 use windows_sys::Win32::System::Services::{
     ChangeServiceConfig2W, CloseServiceHandle, ControlService, CreateServiceW, DeleteService,
     OpenSCManagerW, OpenServiceW, QueryServiceStatus, RegisterServiceCtrlHandlerW,
-    SetServiceStatus, StartServiceCtrlDispatcherW, StartServiceW, ENUM_SERVICE_TYPE,
-    SC_ACTION, SC_ACTION_RESTART, SC_MANAGER_ALL_ACCESS, SERVICE_ACCEPT_SHUTDOWN,
-    SERVICE_ACCEPT_STOP, SERVICE_AUTO_START, SERVICE_CONFIG_FAILURE_ACTIONS, SERVICE_CONTROL_SHUTDOWN,
-    SERVICE_CONTROL_STOP, SERVICE_ERROR_NORMAL, SERVICE_FAILURE_ACTIONSW, SERVICE_RUNNING,
-    SERVICE_START_PENDING, SERVICE_STATUS, SERVICE_STATUS_HANDLE, SERVICE_STOPPED,
-    SERVICE_STOP_PENDING, SERVICE_TABLE_ENTRYW, SERVICE_WIN32_OWN_PROCESS, SERVICE_ALL_ACCESS,
-    SC_MANAGER_CONNECT, SERVICE_QUERY_STATUS,
+    SetServiceStatus, StartServiceCtrlDispatcherW, StartServiceW, ENUM_SERVICE_TYPE, SC_ACTION,
+    SC_ACTION_RESTART, SC_MANAGER_ALL_ACCESS, SC_MANAGER_CONNECT, SERVICE_ACCEPT_SHUTDOWN,
+    SERVICE_ACCEPT_STOP, SERVICE_ALL_ACCESS, SERVICE_AUTO_START, SERVICE_CONFIG_FAILURE_ACTIONS,
+    SERVICE_CONTROL_SHUTDOWN, SERVICE_CONTROL_STOP, SERVICE_ERROR_NORMAL, SERVICE_FAILURE_ACTIONSW,
+    SERVICE_QUERY_STATUS, SERVICE_RUNNING, SERVICE_START_PENDING, SERVICE_STATUS,
+    SERVICE_STATUS_HANDLE, SERVICE_STOPPED, SERVICE_STOP_PENDING, SERVICE_TABLE_ENTRYW,
+    SERVICE_WIN32_OWN_PROCESS,
 };
 
 use crate::config::Config;
@@ -87,8 +87,14 @@ pub fn install() -> Result<(), ServiceError> {
         // Restart on crash: two restarts with a short delay, reset the counter
         // after a day. This is Windows' own self-healing, backing the engine's.
         let mut actions = [
-            SC_ACTION { Type: SC_ACTION_RESTART, Delay: 5_000 },
-            SC_ACTION { Type: SC_ACTION_RESTART, Delay: 10_000 },
+            SC_ACTION {
+                Type: SC_ACTION_RESTART,
+                Delay: 5_000,
+            },
+            SC_ACTION {
+                Type: SC_ACTION_RESTART,
+                Delay: 10_000,
+            },
         ];
         let mut fa: SERVICE_FAILURE_ACTIONSW = std::mem::zeroed();
         fa.dwResetPeriod = 86_400;
@@ -228,7 +234,7 @@ fn set_status(state: u32, accept: u32, wait_hint: u32) {
     } else {
         CHECKPOINT.fetch_add(1, Ordering::SeqCst) + 1
     };
-    let mut status = SERVICE_STATUS {
+    let status = SERVICE_STATUS {
         dwServiceType: SERVICE_WIN32_OWN_PROCESS as ENUM_SERVICE_TYPE,
         dwCurrentState: state,
         dwControlsAccepted: accept,
@@ -238,7 +244,7 @@ fn set_status(state: u32, accept: u32, wait_hint: u32) {
         dwWaitHint: wait_hint,
     };
     unsafe {
-        SetServiceStatus(handle as SERVICE_STATUS_HANDLE, &mut status);
+        SetServiceStatus(handle as SERVICE_STATUS_HANDLE, &status);
     }
 }
 
@@ -358,7 +364,10 @@ pub enum ServiceError {
 
 impl ServiceError {
     fn last(op: &'static str) -> ServiceError {
-        ServiceError::Win32 { op, code: last_error() }
+        ServiceError::Win32 {
+            op,
+            code: last_error(),
+        }
     }
     fn from_code(op: &'static str, code: u32) -> ServiceError {
         ServiceError::Win32 { op, code }

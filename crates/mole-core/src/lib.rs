@@ -22,7 +22,7 @@ pub mod winservice;
 
 pub use config::Config;
 pub use engine::{FilterEngine, QuicBlocker};
-pub use ffi::{LoadError, WinDivertApi, WinDivertAddress};
+pub use ffi::{LoadError, WinDivertAddress, WinDivertApi};
 pub use packet::{find_sni, is_client_hello, TcpView};
 pub use strategy::{Cut, Decoy, Emit, Strategy};
 pub use windivert::{Mode, Packet, WinDivert, WinDivertError};
