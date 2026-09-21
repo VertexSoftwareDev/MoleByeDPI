@@ -1,0 +1,10 @@
+[package]
+name = "mole-dns"
+description = "DNS over HTTPS: a minimal wire-format client that the operator cannot rewrite."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rustls.workspace = true
+rustls-platform-verifier.workspace = true

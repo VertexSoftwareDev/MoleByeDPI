@@ -1,0 +1,20 @@
+[package]
+name = "mole-cli"
+description = "Command line: measure the line, apply a strategy, check the machine."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mole"
+path = "src/main.rs"
+
+[dependencies]
+mole-core = { path = "../mole-core" }
+mole-dns = { path = "../mole-dns" }
+mole-probe = { path = "../mole-probe" }
+serde_json.workspace = true
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_System_Console",
+] }

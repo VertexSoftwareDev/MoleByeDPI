@@ -1,0 +1,14 @@
+[package]
+name = "mole-probe"
+description = "Measures which desync strategy gets a TLS handshake through this line's filter."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mole-core = { path = "../mole-core" }
+mole-dns = { path = "../mole-dns" }
+rustls.workspace = true
+rustls-platform-verifier.workspace = true
+serde.workspace = true
+serde_json.workspace = true

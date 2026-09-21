@@ -1,0 +1,17 @@
+[package]
+name = "mole-core"
+description = "WinDivert wrapper, packet surgery and the desync strategies Mole applies to TLS handshakes."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Services",
+    "Win32_Security",
+    "Win32_System_Threading",
+    "Win32_System_Diagnostics_ToolHelp",
+] }
