@@ -72,6 +72,12 @@ pub enum Strategy {
         decoy: Decoy,
         cut: Cut,
     },
+    /// Send a decoy, then split the real ClientHello and send the halves out of
+    /// order — for filters that reassemble but key on arrival order.
+    FakeDisorder {
+        decoy: Decoy,
+        cut: Cut,
+    },
 }
 
 /// TTL values the sweep tries, low first. A home line's DPI usually sits a few
@@ -89,6 +95,9 @@ impl Strategy {
             Strategy::Fake { decoy } => format!("fake:{}", decoy_label(decoy)),
             Strategy::FakeSplit { decoy, cut } => {
                 format!("fakesplit:{}:{}", decoy_label(decoy), cut_label(cut))
+            }
+            Strategy::FakeDisorder { decoy, cut } => {
+                format!("fakedisorder:{}:{}", decoy_label(decoy), cut_label(cut))
             }
         }
     }
@@ -109,6 +118,10 @@ impl Strategy {
                 decoy: parse_decoy(parts.next()?)?,
             }),
             "fakesplit" => Some(Strategy::FakeSplit {
+                decoy: parse_decoy(parts.next()?)?,
+                cut: parse_cut(parts.next()?)?,
+            }),
+            "fakedisorder" => Some(Strategy::FakeDisorder {
                 decoy: parse_decoy(parts.next()?)?,
                 cut: parse_cut(parts.next()?)?,
             }),
@@ -152,6 +165,18 @@ impl Strategy {
                 cut: Cut::Sni,
             });
         }
+        // A few fake+disorder combinations for filters that reassemble by arrival
+        // order — the last resort before giving up.
+        b.push(Strategy::FakeDisorder {
+            decoy: Decoy::BadChecksum,
+            cut: Cut::Sni,
+        });
+        for ttl in [3u8, 5, 7] {
+            b.push(Strategy::FakeDisorder {
+                decoy: Decoy::LowTtl(ttl),
+                cut: Cut::Sni,
+            });
+        }
         b
     }
 
@@ -177,6 +202,14 @@ impl Strategy {
                     out.push(d);
                 }
                 out.extend(split(orig, view, *cut, false));
+                out
+            }
+            Strategy::FakeDisorder { decoy, cut } => {
+                let mut out = Vec::new();
+                if let Some(d) = make_decoy(orig, view, *decoy) {
+                    out.push(d);
+                }
+                out.extend(split(orig, view, *cut, true));
                 out
             }
         }

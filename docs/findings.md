@@ -81,3 +81,17 @@ the usable outcome, not the first encouraging sign.
 **Where the DPI sits.** Every TTL from 3 upward works, 2 doesn't — so the middlebox
 is ~2 hops out on this line, and a fixed low TTL like 3–5 is plenty here. The sweep
 finds it without needing to know that in advance.
+
+## 2026-09-22 · Coverage and UX round
+
+- **Battery widened** with `FakeDisorder` (fake decoy + out-of-order split) for
+  filters that reassemble by arrival order — appended last, so it never slows the
+  common case: this line still resolves to `fake:ttl3` in ~1.6 s (stop-on-first).
+- **DoH fallback** (Cloudflare → Google → Quad9) so a single blocked DoH endpoint
+  can't stop resolution on some other line.
+- **`mole test <host>`** and the GUI's live site checker share one admin-free
+  reachability probe (DoH + full handshake): blocked/open with a reason.
+- **GUI**: themed light/dark, TR/EN, a live site checker, and a system-tray icon
+  with close-to-tray (verified: the process survives a window close by hiding).
+- The bad-checksum-vs-offload lesson still holds: the strict full-handshake probe
+  keeps a decoy that only *replies* from being credited as a working bypass.
