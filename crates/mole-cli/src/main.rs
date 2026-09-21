@@ -16,7 +16,7 @@ use std::time::Duration;
 use mole_core::admin::is_elevated;
 use mole_core::packet::find_sni;
 use mole_core::service::conflicting_dpi_service;
-use mole_core::{Mode, TcpView, WinDivert, WinDivertApi};
+use mole_core::{Config, FilterEngine, Mode, Strategy, TcpView, WinDivert, WinDivertApi};
 use mole_dns::Resolver;
 use mole_probe::{ProbeOptions, ProbeReport, Verdict};
 
@@ -30,6 +30,7 @@ fn main() {
         "capture" => cmd_capture(rest),
         "dns" => cmd_dns(rest),
         "probe" => cmd_probe(rest),
+        "apply" => cmd_apply(rest),
         "help" | "--help" | "-h" => {
             print_help();
             0
@@ -55,10 +56,15 @@ fn print_help() {
          \x20                          resolve a name over DoH (bypasses DNS hijacking)\n\
          \x20 mole probe [host ...] [--google] [--all] [--json FILE]\n\
          \x20                          measure which bypass strategy works on this line\n\
+         \x20 mole apply [<strategy> | --auto [host ...]]\n\
+         \x20                          apply a strategy system-wide until stopped\n\
          \n\
          `probe` with no host uses a small set of commonly-blocked targets.\n\
          --all measures every strategy (for the community map); default stops at\n\
-         the first that works. --json writes a machine-readable report."
+         the first that works. --json writes a machine-readable report.\n\
+         `apply --auto` probes first, then applies and saves the winner. `apply`\n\
+         with no argument reuses the saved strategy. Ctrl+C stops and restores\n\
+         normal traffic (fail-open)."
     );
 }
 
@@ -413,6 +419,165 @@ fn cmd_probe(args: &[String]) -> i32 {
     } else {
         1
     }
+}
+
+fn cmd_apply(args: &[String]) -> i32 {
+    let mut auto = false;
+    let mut hosts: Vec<String> = Vec::new();
+    let mut label: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--auto" => auto = true,
+            other if other.starts_with("--") => {
+                eprintln!("mole apply: unknown option '{other}'");
+                return 2;
+            }
+            other if auto => hosts.push(other.to_string()),
+            other => label = Some(other.to_string()),
+        }
+        i += 1;
+    }
+
+    if !is_elevated() {
+        eprintln!("mole apply: needs administrator rights (WinDivert driver).");
+        return 1;
+    }
+    let api = match WinDivertApi::load() {
+        Ok(api) => Arc::new(api),
+        Err(e) => {
+            eprintln!("mole apply: {e}");
+            return 1;
+        }
+    };
+
+    if let Some(svc) = conflicting_dpi_service() {
+        eprintln!(
+            "mole apply: the '{svc}' service is running and rewrites the same handshakes.\n\
+             Stop it first (`sc stop {svc}`), or the two tools will fight."
+        );
+        return 1;
+    }
+
+    // Decide which strategy to apply: --auto probes, a label is parsed, and no
+    // argument reuses the saved config.
+    let strategy = if auto {
+        match choose_by_probe(&api, &hosts) {
+            Some(s) => s,
+            None => return 1,
+        }
+    } else if let Some(l) = label {
+        match Strategy::from_label(&l) {
+            Some(s) => s,
+            None => {
+                eprintln!("mole apply: '{l}' is not a known strategy (e.g. split:sni, fakesplit:ttl6:sni).");
+                return 1;
+            }
+        }
+    } else {
+        match Config::load() {
+            Some(c) => match Strategy::from_label(&c.strategy) {
+                Some(s) => {
+                    println!("Using saved strategy: {}", c.strategy);
+                    s
+                }
+                None => {
+                    eprintln!("mole apply: saved strategy '{}' is unreadable; run `mole apply --auto`.", c.strategy);
+                    return 1;
+                }
+            },
+            None => {
+                eprintln!("mole apply: no strategy given and none saved. Try `mole apply --auto`.");
+                return 1;
+            }
+        }
+    };
+
+    run_engine(api, strategy)
+}
+
+/// Probe the targets, pick the first strategy that works anywhere, and save it.
+fn choose_by_probe(api: &Arc<WinDivertApi>, hosts: &[String]) -> Option<Strategy> {
+    let opts = ProbeOptions::default();
+    let targets: Vec<String> = if hosts.is_empty() {
+        DEFAULT_TARGETS.iter().map(|s| s.to_string()).collect()
+    } else {
+        hosts.to_vec()
+    };
+    println!("Measuring this line to pick a strategy...");
+    for host in &targets {
+        let report = mole_probe::run(host, api.clone(), &opts);
+        if let Some(winner) = &report.winner {
+            println!("  {host}: '{winner}' works.");
+            let cfg = Config::new(winner, &opts.resolver.name);
+            if let Err(e) = cfg.save() {
+                eprintln!("  (could not save choice: {e})");
+            }
+            return Strategy::from_label(winner);
+        } else {
+            println!("  {host}: no strategy got through ({}).", verdict_word(&report.verdict));
+        }
+    }
+    eprintln!(
+        "mole apply --auto: none of the strategies got through on the tested targets.\n\
+         This line may need a technique Mole doesn't have yet, or the block is IP-level."
+    );
+    None
+}
+
+fn verdict_word(v: &Verdict) -> &'static str {
+    match v {
+        Verdict::NotBlocked => "not blocked",
+        Verdict::BypassFound => "bypass found",
+        Verdict::IpBlocked => "IP-level block",
+        Verdict::NoBypass => "DPI block, no bypass",
+        Verdict::DnsFailed => "DNS failed",
+    }
+}
+
+/// Run the live engine until Ctrl+C, then stop and restore normal traffic.
+fn run_engine(api: Arc<WinDivertApi>, strategy: Strategy) -> i32 {
+    let engine = match FilterEngine::start(api, strategy.clone()) {
+        Ok(e) => Arc::new(e),
+        Err(e) => {
+            eprintln!("mole apply: {e}");
+            return 1;
+        }
+    };
+    println!(
+        "Applying '{}' to all outbound HTTPS. Ctrl+C to stop (traffic then flows normally).\n",
+        strategy.label()
+    );
+
+    let stop = Arc::new(AtomicBool::new(false));
+    {
+        let stop = stop.clone();
+        let stopper = engine.stopper();
+        let _ = ctrlc(move || {
+            stop.store(true, Ordering::SeqCst);
+            stopper.shutdown();
+        });
+    }
+
+    // A small reporter thread prints live counters until we stop.
+    let stats = engine.stats();
+    {
+        let stop = stop.clone();
+        std::thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                let shaped = stats.handshakes_shaped.load(Ordering::Relaxed);
+                let passed = stats.packets_passed.load(Ordering::Relaxed);
+                print!("\r  shaped {shaped} handshake(s), passed {passed} packet(s)   ");
+                use std::io::Write;
+                let _ = std::io::stdout().flush();
+            }
+        });
+    }
+
+    engine.run(&stop);
+    println!("\nStopped. Traffic restored.");
+    0
 }
 
 fn print_report(r: &ProbeReport) {

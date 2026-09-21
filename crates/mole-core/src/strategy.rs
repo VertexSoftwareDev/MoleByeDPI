@@ -84,6 +84,29 @@ impl Strategy {
         }
     }
 
+    /// Parse a strategy back from its `label()`. The inverse of `label`, so a
+    /// chosen strategy can be saved to config and read back by the service.
+    pub fn from_label(s: &str) -> Option<Strategy> {
+        let mut parts = s.split(':');
+        match parts.next()? {
+            "passthrough" => Some(Strategy::Passthrough),
+            "split" => Some(Strategy::Split {
+                cut: parse_cut(parts.next()?)?,
+            }),
+            "disorder" => Some(Strategy::Disorder {
+                cut: parse_cut(parts.next()?)?,
+            }),
+            "fake" => Some(Strategy::Fake {
+                decoy: parse_decoy(parts.next()?)?,
+            }),
+            "fakesplit" => Some(Strategy::FakeSplit {
+                decoy: parse_decoy(parts.next()?)?,
+                cut: parse_cut(parts.next()?)?,
+            }),
+            _ => None,
+        }
+    }
+
     /// The default battery the probe walks, cheapest/most-likely first. Every
     /// entry is a technique proven in the field against Turkish ISP filters.
     pub fn probe_battery() -> Vec<Strategy> {
@@ -140,6 +163,26 @@ fn cut_label(cut: &Cut) -> String {
     match cut {
         Cut::Sni => "sni".into(),
         Cut::Fixed(n) => format!("at{n}"),
+    }
+}
+
+fn parse_cut(tok: &str) -> Option<Cut> {
+    if tok == "sni" {
+        Some(Cut::Sni)
+    } else {
+        tok.strip_prefix("at")?.parse().ok().map(Cut::Fixed)
+    }
+}
+
+fn parse_decoy(tok: &str) -> Option<Decoy> {
+    if tok == "badsum" {
+        Some(Decoy::BadChecksum)
+    } else if let Some(n) = tok.strip_prefix("ttl") {
+        n.parse().ok().map(Decoy::LowTtl)
+    } else if let Some(n) = tok.strip_prefix("wseq") {
+        n.parse().ok().map(Decoy::WrongSeq)
+    } else {
+        None
     }
 }
 
@@ -459,6 +502,16 @@ mod tests {
         // The real ClientHello still follows with its true sequence.
         let r = &out[1].packet.data;
         assert_eq!(u32::from_be_bytes([r[24], r[25], r[26], r[27]]), 1000);
+    }
+
+    #[test]
+    fn label_round_trips_through_from_label() {
+        for s in Strategy::probe_battery() {
+            let round = Strategy::from_label(&s.label());
+            assert_eq!(round.as_ref(), Some(&s), "{} did not round-trip", s.label());
+        }
+        assert_eq!(Strategy::from_label("passthrough"), Some(Strategy::Passthrough));
+        assert_eq!(Strategy::from_label("nonsense"), None);
     }
 
     #[test]

@@ -11,12 +11,16 @@
 
 pub mod admin;
 pub mod checksum;
+pub mod config;
+pub mod engine;
 pub mod ffi;
 pub mod packet;
 pub mod service;
 pub mod strategy;
 pub mod windivert;
 
+pub use config::Config;
+pub use engine::FilterEngine;
 pub use ffi::{LoadError, WinDivertApi, WinDivertAddress};
 pub use packet::{find_sni, is_client_hello, TcpView};
 pub use strategy::{Cut, Decoy, Emit, Strategy};
