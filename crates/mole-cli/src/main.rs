@@ -37,6 +37,10 @@ fn main() {
         "status" => cmd_status(),
         "report" => cmd_report(rest),
         "service-run" => cmd_service_run(),
+        "version" | "--version" | "-V" => {
+            println!("mole {}", env!("CARGO_PKG_VERSION"));
+            0
+        }
         "help" | "--help" | "-h" => {
             print_help();
             0
