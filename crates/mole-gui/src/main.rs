@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 
 use i18n::Lang;
-use mole_probe::{Reachable, Resolver};
+use mole_probe::Reachable;
 use status::{Health, Status};
 
 const INITIAL_SIZE: [f32; 2] = [440.0, 620.0];
@@ -181,7 +181,7 @@ impl MoleApp {
         let result = self.check.result.clone();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
-            let r = mole_probe::check_reachable(&host, &Resolver::cloudflare());
+            let r = mole_probe::check_reachable(&host);
             *result.lock().unwrap() = Some(r);
             ctx.request_repaint();
         });

@@ -30,6 +30,7 @@ fn main() {
         "doctor" => cmd_doctor(),
         "capture" => cmd_capture(rest),
         "dns" => cmd_dns(rest),
+        "test" => cmd_test(rest),
         "probe" => cmd_probe(rest),
         "apply" => cmd_apply(rest),
         "install" => cmd_install(rest),
@@ -64,6 +65,7 @@ fn print_help() {
          \x20                          sniff TLS ClientHellos and show their SNI\n\
          \x20 mole dns <host> [--google]\n\
          \x20                          resolve a name over DoH (bypasses DNS hijacking)\n\
+         \x20 mole test <host>         is a site reachable right now? (no admin needed)\n\
          \x20 mole probe [host ...] [--google] [--all] [--json FILE]\n\
          \x20                          measure which bypass strategy works on this line\n\
          \x20 mole apply [<strategy> | --auto [host ...]] [--block-quic]\n\
@@ -381,6 +383,34 @@ fn cmd_dns(args: &[String]) -> i32 {
         }
         Err(e) => {
             eprintln!("Failed: {e}");
+            1
+        }
+    }
+}
+
+fn cmd_test(args: &[String]) -> i32 {
+    let Some(host) = args.iter().find(|a| !a.starts_with("--")) else {
+        eprintln!("mole test: give a host, e.g. `mole test www.roblox.com`");
+        return 2;
+    };
+    print!("Checking {host} ... ");
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    match mole_probe::check_reachable(host) {
+        mole_probe::Reachable::Yes => {
+            println!("OPEN — not blocked on this line.");
+            0
+        }
+        mole_probe::Reachable::Blocked(reason) => {
+            println!("BLOCKED — {reason}. Run `mole install --auto` to get past it.");
+            1
+        }
+        mole_probe::Reachable::IpBlocked => {
+            println!("IP-level block — a local tool cannot pass this.");
+            1
+        }
+        mole_probe::Reachable::DnsFailed(reason) => {
+            println!("could not resolve — {reason}.");
             1
         }
     }

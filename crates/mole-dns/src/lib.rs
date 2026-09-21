@@ -46,6 +46,16 @@ impl Resolver {
         }
     }
 
+    /// Quad9's `9.9.9.9` — a third option if the first two are blocked.
+    pub fn quad9() -> Resolver {
+        Resolver {
+            addr: "9.9.9.9:443".parse().unwrap(),
+            sni: "dns.quad9.net".into(),
+            path: "/dns-query".into(),
+            name: "Quad9".into(),
+        }
+    }
+
     /// Look up the IPv4 addresses of `host`.
     pub fn resolve_a(&self, host: &str) -> Result<Vec<Ipv4Addr>, DnsError> {
         let query = build_query(host, 1); // type A
@@ -228,6 +238,33 @@ fn skip_name(msg: &[u8], mut p: usize) -> Result<usize, DnsError> {
         }
         p += 1 + len as usize;
     }
+}
+
+/// The resolvers Mole tries in order. One blocked DoH endpoint isn't fatal —
+/// the operator would have to block all of these, over TLS, to stop resolution.
+pub fn default_resolvers() -> Vec<Resolver> {
+    vec![
+        Resolver::cloudflare(),
+        Resolver::google(),
+        Resolver::quad9(),
+    ]
+}
+
+/// Resolve `host` over each resolver in turn, returning the first non-empty
+/// answer together with the resolver that gave it. Fails only if every one does.
+pub fn resolve_any(
+    host: &str,
+    resolvers: &[Resolver],
+) -> Result<(Vec<Ipv4Addr>, String), DnsError> {
+    let mut last: Option<DnsError> = None;
+    for r in resolvers {
+        match r.resolve_a(host) {
+            Ok(ips) if !ips.is_empty() => return Ok((ips, r.name.clone())),
+            Ok(_) => last = Some(DnsError::BadResponse),
+            Err(e) => last = Some(e),
+        }
+    }
+    Err(last.unwrap_or(DnsError::BadResponse))
 }
 
 #[derive(Debug)]

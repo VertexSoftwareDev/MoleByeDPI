@@ -152,15 +152,12 @@ impl Default for ProbeOptions {
 pub fn run(host: &str, api: Arc<WinDivertApi>, opts: &ProbeOptions) -> ProbeReport {
     let conflict = conflicting_dpi_service().map(|s| s.to_string());
 
-    // 1. Resolve the true address over DoH.
-    let ip = match opts.resolver.resolve_a(host) {
-        Ok(ips) if !ips.is_empty() => ips[0],
-        Ok(_) => {
-            return dns_failed(host, opts, conflict, "the resolver returned no A records");
-        }
-        Err(e) => {
-            return dns_failed(host, opts, conflict, &e.to_string());
-        }
+    // 1. Resolve the true address over DoH, trying each resolver in turn so one
+    //    blocked DoH endpoint isn't fatal.
+    let resolvers = resolver_chain(&opts.resolver);
+    let (ip, used_resolver) = match mole_dns::resolve_any(host, &resolvers) {
+        Ok((ips, name)) => (ips[0], name),
+        Err(e) => return dns_failed(host, opts, conflict, &e.to_string()),
     };
 
     // 2. Control: reach the target with no help at all.
@@ -168,7 +165,7 @@ pub fn run(host: &str, api: Arc<WinDivertApi>, opts: &ProbeOptions) -> ProbeRepo
 
     let mut report = ProbeReport {
         target: host.to_string(),
-        resolver: opts.resolver.name.clone(),
+        resolver: used_resolver,
         resolved_ip: Some(ip.to_string()),
         verdict: Verdict::NoBypass,
         winner: None,
@@ -234,11 +231,11 @@ pub enum Reachable {
     DnsFailed(String),
 }
 
-/// Resolve `host` over `resolver` and check whether a TLS handshake completes.
-pub fn check_reachable(host: &str, resolver: &Resolver) -> Reachable {
-    let ip = match resolver.resolve_a(host) {
-        Ok(ips) if !ips.is_empty() => ips[0],
-        Ok(_) => return Reachable::DnsFailed("no A records".into()),
+/// Resolve `host` (over any working DoH resolver) and check whether a TLS
+/// handshake completes on the line as it currently stands.
+pub fn check_reachable(host: &str) -> Reachable {
+    let ip = match mole_dns::resolve_any(host, &mole_dns::default_resolvers()) {
+        Ok((ips, _)) => ips[0],
         Err(e) => return Reachable::DnsFailed(e.to_string()),
     };
     match tls_probe(ip, host, Duration::from_secs(5)) {
@@ -248,6 +245,17 @@ pub fn check_reachable(host: &str, resolver: &Resolver) -> Reachable {
         Reach::Silent => Reachable::Blocked("no reply (dropped)".into()),
         Reach::Broke => Reachable::Blocked("handshake broke".into()),
     }
+}
+
+/// The user's chosen resolver first, then the other defaults as fallbacks.
+fn resolver_chain(first: &Resolver) -> Vec<Resolver> {
+    let mut chain = vec![first.clone()];
+    for r in mole_dns::default_resolvers() {
+        if r.name != first.name {
+            chain.push(r);
+        }
+    }
+    chain
 }
 
 fn dns_failed(
