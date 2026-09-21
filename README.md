@@ -63,7 +63,9 @@ prompt:
 mole doctor              # check admin, driver, and a live capture
 mole capture             # sniff outbound ClientHellos, show their SNI (traffic untouched)
 mole dns <host>          # resolve over DoH (bypasses DNS hijacking)
+mole test <host>         # is a site reachable right now? (no admin needed)
 mole probe [host ...]    # measure which bypass strategy works on this line
+mole version             # print the version
 ```
 
 `mole probe` resolves each target over DoH, then attempts a TLS handshake with no
@@ -110,6 +112,20 @@ If GoodByeDPI (or any other DPI-bypass tool) is active, it splits ClientHello pa
 before Mole's sniffer sees them, so `capture` will show fragments without a readable SNI.
 Stop the other tool to see clean captures. Mole will manage this coexistence properly in a
 later phase; two tools rewriting the same handshake fight each other.
+
+## Known limits
+
+- **IPv4 only** for now. The filter and probe parse IPv4/TCP; an IPv6 handshake
+  passes through unshaped. Most Turkish DPI acts on IPv4, but dual-stack sites over
+  IPv6 aren't yet covered.
+- **QUIC** is sidestepped, not bypassed: `--block-quic` drops UDP :443 so browsers
+  fall back to TCP. A full QUIC Initial desync is future work.
+- **Bad-checksum decoys are unreliable where the NIC does TCP checksum offload** —
+  the decoy gets repaired on the way out and reaches the server. The probe detects
+  this (`handshake broke`) and prefers a TTL-based fake, so it doesn't affect the
+  chosen strategy; it only narrows the battery on such machines.
+- Not a VPN, not anonymity: Mole confuses the filter, it does not hide traffic. An
+  IP-level block can't be passed locally — Mole says so rather than failing quietly.
 
 ## Legal
 

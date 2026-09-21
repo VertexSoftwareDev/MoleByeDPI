@@ -584,6 +584,42 @@ mod tests {
     }
 
     #[test]
+    fn fakesplit_emits_decoy_then_two_split_segments() {
+        let real = build_client_hello("blocked.example");
+        let ihl = 20;
+        let mut data = vec![0u8; ihl + 20 + real.len()];
+        data[0] = 0x45;
+        data[9] = 6;
+        data[16..20].copy_from_slice(&[10, 0, 0, 1]);
+        let total = data.len() as u16;
+        data[2..4].copy_from_slice(&total.to_be_bytes());
+        data[ihl + 2..ihl + 4].copy_from_slice(&443u16.to_be_bytes());
+        data[ihl + 12] = 0x50;
+        data[ihl + 20..].copy_from_slice(&real);
+        let view = TcpView::parse(&data).unwrap();
+        let pkt = Packet {
+            data,
+            addr: WinDivertAddress::zeroed(),
+        };
+
+        let out = Strategy::FakeSplit {
+            decoy: Decoy::LowTtl(5),
+            cut: Cut::Sni,
+        }
+        .apply(&pkt, &view);
+        assert_eq!(out.len(), 3, "decoy + two split halves");
+        // The decoy carries the benign name, not the real blocked one.
+        assert_eq!(
+            find_sni(&out[0].packet.data[40..]).map(|(h, _)| h),
+            Some("www.google.com".to_string())
+        );
+        // The two halves together reconstruct the real payload.
+        let mut rebuilt = out[1].packet.data[40..].to_vec();
+        rebuilt.extend_from_slice(&out[2].packet.data[40..]);
+        assert_eq!(rebuilt, real);
+    }
+
+    #[test]
     fn passthrough_is_identity() {
         let (pkt, view) = packet_with(b"anything");
         let out = Strategy::Passthrough.apply(&pkt, &view);

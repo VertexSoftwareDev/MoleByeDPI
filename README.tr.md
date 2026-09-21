@@ -59,8 +59,10 @@ Tek komutlar:
 ```
 mole doctor              # yönetici, sürücü ve canlı yakalama teşhisi
 mole dns <host>          # DoH ile çöz (DNS kaçırmayı aşar)
+mole test <host>         # bir site şu an erişilebilir mi? (yönetici gerekmez)
 mole probe [host ...]    # bu hatta hangi stratejinin çalıştığını ölç
 mole report              # her şeyi ölç, paylaşılabilir (gizlilik-korumalı) rapor yaz
+mole version             # sürümü yazar
 ```
 
 `mole-gui`, aynı komutların üstünde küçük bir penceredir: servis durumunu, seçili
@@ -73,6 +75,20 @@ GoodByeDPI (ya da başka bir DPI atlatma aracı) açıksa, ClientHello paketleri
 Mole'un dinleyicisinden önce parçalar; bu yüzden `capture` okunabilir SNI olmadan
 parçalar gösterir ve `probe`/`apply` uyarır. Temiz sonuç için ötekini durdur. İki
 araç aynı el sıkışmayı yeniden yazınca birbiriyle kavga eder — birini tut.
+
+## Bilinen sınırlar
+
+- **Şimdilik yalnız IPv4.** Filtre ve probe IPv4/TCP ayrıştırır; IPv6 el sıkışması
+  dokunulmadan geçer. Türkiye'deki DPI çoğunlukla IPv4'te çalışır, ama IPv6 üzerinden
+  gelen çift-yığın siteler henüz kapsanmıyor.
+- **QUIC aşılmıyor, yan geçiliyor:** `--block-quic` UDP :443'ü düşürür, tarayıcı
+  TCP'ye döner. Tam QUIC desync sonraki iş.
+- **Bozuk-checksum sahteleri, NIC checksum offload olan makinelerde güvenilmez** —
+  decoy yolda düzeltilip sunucuya ulaşır. Probe bunu tespit eder (`handshake broke`)
+  ve TTL tabanlı sahteyi tercih eder; yani seçilen stratejiyi etkilemez, sadece o
+  makinelerde battery'i daraltır.
+- VPN değil, anonimlik aracı değil: Mole filtreyi şaşırtır, trafiği gizlemez. IP
+  seviyesindeki engel yerelde aşılamaz — Mole sessizce başarısız olmak yerine söyler.
 
 ## Yasal
 

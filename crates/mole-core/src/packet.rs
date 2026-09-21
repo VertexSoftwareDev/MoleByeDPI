@@ -198,6 +198,29 @@ mod tests {
     }
 
     #[test]
+    fn parse_rejects_ipv6_and_truncated() {
+        // IPv6 (version nibble 6) is not parsed here.
+        let mut v6 = vec![0u8; 60];
+        v6[0] = 0x60;
+        assert!(TcpView::parse(&v6).is_none());
+        // Too short to hold IPv4 + TCP headers.
+        assert!(TcpView::parse(&[0x45, 0, 0, 0]).is_none());
+        // IPv4 but UDP, not TCP.
+        let mut udp = vec![0u8; 40];
+        udp[0] = 0x45;
+        udp[9] = 17; // UDP
+        assert!(TcpView::parse(&udp).is_none());
+    }
+
+    #[test]
+    fn find_sni_survives_a_truncated_clienthello() {
+        // A ClientHello record header claiming more than is present must not panic
+        // or read out of bounds — it just returns None.
+        let truncated = [0x16, 0x03, 0x01, 0x02, 0x00, 0x01, 0x00, 0x01, 0xfc];
+        assert!(find_sni(&truncated).is_none());
+    }
+
+    #[test]
     fn tcpview_parses_ipv4_tcp() {
         // Minimal IPv4(20) + TCP(20) with SYN set, dst port 443.
         let mut p = vec![0u8; 40];
