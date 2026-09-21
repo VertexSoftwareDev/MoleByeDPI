@@ -10,6 +10,8 @@
 //! filter cannot read the server name in one clean segment. The server always
 //! reassembles a valid stream.
 
+use std::sync::OnceLock;
+
 use crate::checksum::tcp_checksum;
 use crate::packet::{find_sni, TcpView};
 use crate::windivert::Packet;
@@ -63,6 +65,11 @@ pub enum Strategy {
     FakeSplit { decoy: Decoy, cut: Cut },
 }
 
+/// TTL values the sweep tries, low first. A home line's DPI usually sits a few
+/// hops away, before the operator's core; 2–9 covers the common cases without a
+/// full traceroute.
+const TTL_SWEEP: &[u8] = &[2, 3, 4, 5, 6, 7, 8, 9];
+
 impl Strategy {
     /// A short stable label used in reports and as a CLI/config token.
     pub fn label(&self) -> String {
@@ -80,18 +87,25 @@ impl Strategy {
     /// The default battery the probe walks, cheapest/most-likely first. Every
     /// entry is a technique proven in the field against Turkish ISP filters.
     pub fn probe_battery() -> Vec<Strategy> {
-        vec![
+        let mut b = vec![
+            // Cheapest first: pure splits, then sequence/checksum fakes that need
+            // no TTL guessing, then the TTL sweep, then fake+split combinations.
             Strategy::Split { cut: Cut::Sni },
             Strategy::Split { cut: Cut::Fixed(2) },
             Strategy::Disorder { cut: Cut::Sni },
             Strategy::Fake { decoy: Decoy::WrongSeq(10_000) },
             Strategy::Fake { decoy: Decoy::BadChecksum },
-            Strategy::Fake { decoy: Decoy::LowTtl(3) },
-            Strategy::Fake { decoy: Decoy::LowTtl(5) },
-            Strategy::FakeSplit { decoy: Decoy::WrongSeq(10_000), cut: Cut::Sni },
-            Strategy::FakeSplit { decoy: Decoy::BadChecksum, cut: Cut::Sni },
-            Strategy::FakeSplit { decoy: Decoy::LowTtl(5), cut: Cut::Sni },
-        ]
+        ];
+        // TTL sweep: find the hop where the DPI sits without knowing it in advance.
+        for ttl in TTL_SWEEP {
+            b.push(Strategy::Fake { decoy: Decoy::LowTtl(*ttl) });
+        }
+        b.push(Strategy::FakeSplit { decoy: Decoy::WrongSeq(10_000), cut: Cut::Sni });
+        b.push(Strategy::FakeSplit { decoy: Decoy::BadChecksum, cut: Cut::Sni });
+        for ttl in TTL_SWEEP {
+            b.push(Strategy::FakeSplit { decoy: Decoy::LowTtl(*ttl), cut: Cut::Sni });
+        }
+        b
     }
 
     /// Transform the captured ClientHello into the packets to send. Returns the
@@ -227,16 +241,32 @@ fn write_seq(data: &mut [u8], tcp_offset: usize, seq: u32) {
     data[tcp_offset + 4..tcp_offset + 8].copy_from_slice(&seq.to_be_bytes());
 }
 
-/// Build a decoy carrying the same ClientHello bytes but engineered to reach the
-/// filter and no further. Returns `None` if the packet is not the IPv4/TCP shape
-/// we can build a decoy from.
+/// Build a decoy: the connection's own IP/TCP headers carrying a *benign*
+/// ClientHello (a different, unblocked server name), sent at the real sequence
+/// number so a filter that keeps the first bytes it sees for a sequence records
+/// the harmless name for this flow. The server discards the decoy — its TTL
+/// expires, or its checksum/sequence is wrong — so only the real ClientHello
+/// reaches it. Carrying the *real* SNI here would poison nothing; the benign
+/// name is the whole point.
 fn make_decoy(orig: &Packet, view: &TcpView, decoy: Decoy) -> Option<Emit> {
     let ihl = (orig.data[0] & 0x0F) as usize * 4;
-    let mut data = orig.data.clone();
+    let hdr = view.payload_offset;
+    let fake = benign_fake_hello();
+
+    // Real headers + benign payload, with the IP total length fixed up.
+    let mut data = Vec::with_capacity(hdr + fake.len());
+    data.extend_from_slice(&orig.data[..hdr]);
+    data.extend_from_slice(fake);
+    let total = data.len() as u16;
+    data[2..4].copy_from_slice(&total.to_be_bytes());
+
+    let real_seq = read_seq(&orig.data, ihl);
+
     match decoy {
         Decoy::LowTtl(ttl) => {
-            // IP TTL at offset 8. A valid packet that expires early; let the send
-            // path recompute the now-changed IP/TCP checksums.
+            // Overlap the real sequence so the benign name lands where the filter
+            // looks; die early via a low TTL. Send path fixes the checksums.
+            write_seq(&mut data, ihl, real_seq);
             data[8] = ttl;
             Some(Emit {
                 packet: Packet { data, addr: orig.addr },
@@ -244,14 +274,14 @@ fn make_decoy(orig: &Packet, view: &TcpView, decoy: Decoy) -> Option<Emit> {
             })
         }
         Decoy::BadChecksum => {
-            // Correct checksum, then break it by one so the value is definitely
-            // invalid (not accidentally right). The server drops it; a filter
-            // that skips checksum validation still reads the ClientHello.
+            write_seq(&mut data, ihl, real_seq);
+            // Correct the TCP checksum, then break it by one so it is definitely
+            // invalid: the server's stack drops it, a filter that skips checksum
+            // validation still reads the benign name.
             let good = tcp_checksum(view.src, view.dst, &data[ihl..]);
             let bad = good.wrapping_add(1);
-            let pos = ihl + 16; // TCP checksum field
+            let pos = ihl + 16;
             data[pos..pos + 2].copy_from_slice(&bad.to_be_bytes());
-            // Fix the IP header checksum so routers still forward it.
             let ip_sum = crate::checksum::ipv4_checksum(&data[..ihl]);
             data[10..12].copy_from_slice(&ip_sum.to_be_bytes());
             Some(Emit {
@@ -260,17 +290,57 @@ fn make_decoy(orig: &Packet, view: &TcpView, decoy: Decoy) -> Option<Emit> {
             })
         }
         Decoy::WrongSeq(offset) => {
-            // Move the decoy's sequence number far below the real one so the
-            // server rejects it as out-of-window. Valid checksums (recomputed on
-            // send) so it travels; only the sequence is "wrong".
-            let seq = read_seq(&orig.data, ihl).wrapping_sub(offset);
-            write_seq(&mut data, ihl, seq);
+            // A sequence far below the window: the server rejects it outright, but
+            // a filter that inspects every packet still sees the benign name.
+            write_seq(&mut data, ihl, real_seq.wrapping_sub(offset));
             Some(Emit {
                 packet: Packet { data, addr: orig.addr },
                 fix_checksums: true,
             })
         }
     }
+}
+
+/// A cached benign ClientHello (an unblocked server name) used as the decoy body.
+fn benign_fake_hello() -> &'static [u8] {
+    static FAKE: OnceLock<Vec<u8>> = OnceLock::new();
+    FAKE.get_or_init(|| build_client_hello("www.google.com"))
+}
+
+/// Build a minimal but well-formed TLS 1.2 ClientHello record for `sni`. It only
+/// needs to look real enough that a filter reads the server name from it.
+fn build_client_hello(sni: &str) -> Vec<u8> {
+    let host = sni.as_bytes();
+    let mut ext = Vec::new();
+    ext.extend_from_slice(&[0x00, 0x00]); // server_name extension
+    let sni_body_len = 2 + 1 + 2 + host.len();
+    ext.extend_from_slice(&(sni_body_len as u16).to_be_bytes());
+    ext.extend_from_slice(&((1 + 2 + host.len()) as u16).to_be_bytes());
+    ext.push(0x00); // host name
+    ext.extend_from_slice(&(host.len() as u16).to_be_bytes());
+    ext.extend_from_slice(host);
+
+    let mut body = Vec::new();
+    body.extend_from_slice(&[0x03, 0x03]); // TLS 1.2
+    body.extend_from_slice(&[0x00u8; 32]); // random
+    body.push(0x00); // no session id
+    body.extend_from_slice(&[0x00, 0x02, 0x13, 0x01]); // one cipher suite
+    body.extend_from_slice(&[0x01, 0x00]); // null compression
+    body.extend_from_slice(&(ext.len() as u16).to_be_bytes());
+    body.extend_from_slice(&ext);
+
+    let mut hs = Vec::new();
+    hs.push(0x01); // ClientHello
+    let l = body.len();
+    hs.extend_from_slice(&[(l >> 16) as u8, (l >> 8) as u8, l as u8]);
+    hs.extend_from_slice(&body);
+
+    let mut rec = Vec::new();
+    rec.push(0x16); // handshake record
+    rec.extend_from_slice(&[0x03, 0x01]);
+    rec.extend_from_slice(&(hs.len() as u16).to_be_bytes());
+    rec.extend_from_slice(&hs);
+    rec
 }
 
 #[cfg(test)]
@@ -338,6 +408,36 @@ mod tests {
         // The real ClientHello follows, untouched and to be fixed.
         assert!(out[1].fix_checksums);
         assert_eq!(&out[1].packet.data, &pkt.data);
+    }
+
+    #[test]
+    fn decoy_carries_a_benign_name_not_the_real_one() {
+        // The real ClientHello is for a "blocked" host; the decoy must NOT repeat
+        // it — poisoning only works if the decoy shows the filter a benign name.
+        let real = build_client_hello("blocked.example");
+        let ihl = 20;
+        let mut data = vec![0u8; ihl + 20 + real.len()];
+        data[0] = 0x45;
+        data[9] = 6;
+        data[16..20].copy_from_slice(&[10, 0, 0, 1]);
+        let total = data.len() as u16;
+        data[2..4].copy_from_slice(&total.to_be_bytes());
+        data[ihl + 2..ihl + 4].copy_from_slice(&443u16.to_be_bytes());
+        data[ihl + 12] = 0x50;
+        data[ihl + 20..].copy_from_slice(&real);
+        let view = TcpView::parse(&data).unwrap();
+        let pkt = Packet { data, addr: WinDivertAddress::zeroed() };
+
+        let out = Strategy::Fake { decoy: Decoy::LowTtl(5) }.apply(&pkt, &view);
+        let decoy_payload = &out[0].packet.data[40..];
+        assert!(
+            find_sni(decoy_payload).map(|(h, _)| h) == Some("www.google.com".to_string()),
+            "decoy should carry the benign SNI"
+        );
+        assert!(
+            find_sni(decoy_payload).map(|(h, _)| h) != Some("blocked.example".to_string()),
+            "decoy must not carry the real, blocked SNI"
+        );
     }
 
     #[test]
