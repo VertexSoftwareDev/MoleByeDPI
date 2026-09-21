@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use mole_core::service::conflicting_dpi_service;
 use mole_core::{is_client_hello, Mode, Strategy, TcpView, WinDivert, WinDivertApi};
-use mole_dns::Resolver;
+pub use mole_dns::Resolver;
 use rustls::pki_types::ServerName;
 use serde::Serialize;
 
@@ -216,6 +216,38 @@ pub fn run(host: &str, api: Arc<WinDivertApi>, opts: &ProbeOptions) -> ProbeRepo
     }
 
     report
+}
+
+/// Whether a host is reachable *right now*, over the line as it currently stands.
+/// Needs no driver and no elevation — it resolves over DoH and tries a full TLS
+/// handshake. The GUI uses it to show, live, whether a site is blocked before
+/// protection and open after.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Reachable {
+    /// The handshake completed — the site is open on this line.
+    Yes,
+    /// TCP opened but the handshake was reset or dropped — a DPI block.
+    Blocked(String),
+    /// TCP could not be opened — an IP-level block a local tool cannot pass.
+    IpBlocked,
+    /// The name could not be resolved.
+    DnsFailed(String),
+}
+
+/// Resolve `host` over `resolver` and check whether a TLS handshake completes.
+pub fn check_reachable(host: &str, resolver: &Resolver) -> Reachable {
+    let ip = match resolver.resolve_a(host) {
+        Ok(ips) if !ips.is_empty() => ips[0],
+        Ok(_) => return Reachable::DnsFailed("no A records".into()),
+        Err(e) => return Reachable::DnsFailed(e.to_string()),
+    };
+    match tls_probe(ip, host, Duration::from_secs(5)) {
+        Reach::TlsReply => Reachable::Yes,
+        Reach::TcpFailed => Reachable::IpBlocked,
+        Reach::Reset => Reachable::Blocked("connection reset (DPI)".into()),
+        Reach::Silent => Reachable::Blocked("no reply (dropped)".into()),
+        Reach::Broke => Reachable::Blocked("handshake broke".into()),
+    }
 }
 
 fn dns_failed(

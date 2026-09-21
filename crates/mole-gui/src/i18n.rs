@@ -68,6 +68,20 @@ impl Lang {
             Lang::En => format!("Could not start mole {args}: {err}"),
         }
     }
+
+    pub fn reach_blocked(self, reason: &str) -> String {
+        match self {
+            Lang::Tr => format!("Engelli — {reason}"),
+            Lang::En => format!("Blocked — {reason}"),
+        }
+    }
+
+    pub fn reach_dns(self, reason: &str) -> String {
+        match self {
+            Lang::Tr => format!("Çözülemedi — {reason}"),
+            Lang::En => format!("Couldn't resolve — {reason}"),
+        }
+    }
 }
 
 /// Every window string that needs no argument.
@@ -91,17 +105,22 @@ pub struct Strings {
     pub driver: &'static str,
     pub driver_found: &'static str,
     pub driver_missing: &'static str,
-    pub antivirus: &'static str,
-    pub rival_tool: &'static str,
     pub measure_protect: &'static str,
     pub measure_hover: &'static str,
     pub stop_remove: &'static str,
     pub stop_hover: &'static str,
     pub refresh: &'static str,
-    pub rival_warning: &'static str,
     pub failopen: &'static str,
     pub tagline: &'static str,
     pub language_tooltip: &'static str,
+    pub subtitle: &'static str,
+    pub check_title: &'static str,
+    pub check_hint: &'static str,
+    pub check_button: &'static str,
+    pub checking: &'static str,
+    pub reach_open: &'static str,
+    pub reach_ip: &'static str,
+    pub theme_tooltip: &'static str,
 }
 
 static EN: Strings = Strings {
@@ -124,17 +143,22 @@ static EN: Strings = Strings {
     driver: "Driver",
     driver_found: "WinDivert found",
     driver_missing: "WinDivert missing",
-    antivirus: "Antivirus",
-    rival_tool: "Rival tool",
     measure_protect: "🔎  Measure & protect",
     measure_hover: "Find the strategy that works on this line, then install the service. Asks for administrator.",
     stop_remove: "⏹  Stop & remove",
     stop_hover: "Stop and uninstall the service. Traffic then flows normally.",
     refresh: "↻  Refresh",
-    rival_warning: "Stop the rival tool first, or the two will fight over the same handshakes.",
     failopen: "If Mole stops, your internet keeps working (fail-open).",
     tagline: "Mole — it doesn't break the wall, it tunnels under.",
     language_tooltip: "Language",
+    subtitle: "Finds the bypass that works on your line",
+    check_title: "Is a site blocked right now?",
+    check_hint: "e.g. www.roblox.com",
+    check_button: "Check",
+    checking: "checking…",
+    reach_open: "Open — this site isn't blocked",
+    reach_ip: "IP-level block — a local tool can't pass this",
+    theme_tooltip: "Light / dark",
 };
 
 static TR: Strings = Strings {
@@ -157,17 +181,22 @@ static TR: Strings = Strings {
     driver: "Sürücü",
     driver_found: "WinDivert bulundu",
     driver_missing: "WinDivert yok",
-    antivirus: "Antivirüs",
-    rival_tool: "Rakip araç",
     measure_protect: "🔎  Ölç ve koru",
     measure_hover: "Bu hatta çalışan stratejiyi bul, sonra servisi kur. Yönetici izni ister.",
     stop_remove: "⏹  Durdur ve kaldır",
     stop_hover: "Servisi durdur ve kaldır. Sonra trafik normal akar.",
     refresh: "↻  Yenile",
-    rival_warning: "Önce rakip aracı durdur, yoksa ikisi aynı el sıkışma için çakışır.",
     failopen: "Mole dursa bile internetin çalışmaya devam eder (fail-open).",
     tagline: "Mole — köstebek. Duvarı yıkmaz, altından geçer.",
     language_tooltip: "Dil",
+    subtitle: "Hattında çalışan atlatmayı bulur",
+    check_title: "Bir site şu an engelli mi?",
+    check_hint: "örn. www.roblox.com",
+    check_button: "Test et",
+    checking: "kontrol ediliyor…",
+    reach_open: "Açık — bu sitenin engeli yok",
+    reach_ip: "IP engeli — yerelde aşılamaz",
+    theme_tooltip: "Açık / koyu",
 };
 
 /// True if the user's Windows locale is Turkish.

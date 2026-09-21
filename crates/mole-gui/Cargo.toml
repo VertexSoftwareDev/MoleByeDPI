@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 mole-core = { path = "../mole-core" }
+mole-probe = { path = "../mole-probe" }
 serde = { workspace = true }
 # `glow` rather than `wgpu`: a plain control panel, a fast start, no Direct3D
 # stack — the same choice Burrow made.

@@ -8,3 +8,5 @@
 
 # Local staging dir for the release package
 /dist
+# Local GUI screenshots
+/.shots
