@@ -11,6 +11,7 @@
 mod i18n;
 mod status;
 mod theme;
+mod tray;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -116,6 +117,11 @@ struct MoleApp {
     shot: Option<Shot>,
     /// A site to check automatically on startup (`--check`, for demo screenshots).
     pending_check: bool,
+    tray: Option<tray::Tray>,
+    /// Create the tray on the first frame, once the event loop is running.
+    want_tray: bool,
+    /// Set when the user chose Quit from the tray — the next close really exits.
+    quitting: bool,
 }
 
 impl MoleApp {
@@ -139,6 +145,7 @@ impl MoleApp {
         if let Some(host) = &startup.check_host {
             check.input = host.clone();
         }
+        let want_tray = startup.screenshot.is_none();
         MoleApp {
             status: Status::gather(),
             last_refresh: Instant::now(),
@@ -154,6 +161,62 @@ impl MoleApp {
                 requested: false,
             }),
             pending_check: startup.check_host.is_some(),
+            tray: None,
+            // Create the tray on the first frame (when the event loop is up), but
+            // not for a headless screenshot run.
+            want_tray,
+            quitting: false,
+        }
+    }
+
+    /// The tray tooltip for the current health.
+    fn status_tip(&self) -> &'static str {
+        let s = self.lang.strings();
+        match self.status.headline() {
+            Health::Protected => s.protected,
+            Health::Idle => s.idle,
+            Health::Off => s.off,
+        }
+    }
+
+    /// Poll the tray, act on Open/Quit, and drop the window to the tray on close.
+    fn handle_tray(&mut self, ctx: &egui::Context) {
+        // Lazily create the tray on the first frame, guarding against any panic
+        // from the OS tray API so a tray failure never takes the window down.
+        if self.want_tray {
+            self.want_tray = false;
+            let s = self.lang.strings();
+            let (open, quit, tip) = (s.tray_open, s.tray_quit, s.protected);
+            self.tray = std::panic::catch_unwind(|| {
+                tray_icon_rgba()
+                    .and_then(|(rgba, w, h)| tray::Tray::new(rgba, w, h, tip, open, quit))
+            })
+            .ok()
+            .flatten();
+        }
+        let tip = self.status_tip();
+        let action = match &self.tray {
+            Some(t) => {
+                t.set_tooltip(tip);
+                t.poll()
+            }
+            None => return,
+        };
+        match action {
+            tray::TrayAction::Open => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            }
+            tray::TrayAction::Quit => {
+                self.quitting = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            tray::TrayAction::None => {}
+        }
+        // Closing the window hides it to the tray instead of quitting.
+        if ctx.input(|i| i.viewport().close_requested()) && !self.quitting {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
         }
     }
 
@@ -203,8 +266,15 @@ impl eframe::App for MoleApp {
             self.pending_check = false;
             self.start_check(ctx);
         }
+        self.handle_tray(ctx);
         self.drive_screenshot(ctx);
-        ctx.request_repaint_after(Duration::from_secs(2));
+        // Poll the tray often enough to feel responsive even while hidden.
+        let beat = if self.tray.is_some() {
+            Duration::from_millis(400)
+        } else {
+            Duration::from_secs(2)
+        };
+        ctx.request_repaint_after(beat);
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
@@ -547,6 +617,14 @@ fn icon_image() -> egui::ColorImage {
 fn decode_icon() -> Option<image::RgbaImage> {
     const PNG: &[u8] = include_bytes!("../../../icons/256x256.png");
     Some(image::load_from_memory(PNG).ok()?.into_rgba8())
+}
+
+/// The small tray icon as raw RGBA.
+fn tray_icon_rgba() -> Option<(Vec<u8>, u32, u32)> {
+    const PNG: &[u8] = include_bytes!("../../../icons/32x32.png");
+    let img = image::load_from_memory(PNG).ok()?.into_rgba8();
+    let (w, h) = img.dimensions();
+    Some((img.into_raw(), w, h))
 }
 
 /// The CLI sits next to this window's executable.

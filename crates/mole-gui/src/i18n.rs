@@ -121,6 +121,8 @@ pub struct Strings {
     pub reach_open: &'static str,
     pub reach_ip: &'static str,
     pub theme_tooltip: &'static str,
+    pub tray_open: &'static str,
+    pub tray_quit: &'static str,
 }
 
 static EN: Strings = Strings {
@@ -159,6 +161,8 @@ static EN: Strings = Strings {
     reach_open: "Open — this site isn't blocked",
     reach_ip: "IP-level block — a local tool can't pass this",
     theme_tooltip: "Light / dark",
+    tray_open: "Open Mole",
+    tray_quit: "Quit",
 };
 
 static TR: Strings = Strings {
@@ -197,6 +201,8 @@ static TR: Strings = Strings {
     reach_open: "Açık — bu sitenin engeli yok",
     reach_ip: "IP engeli — yerelde aşılamaz",
     theme_tooltip: "Açık / koyu",
+    tray_open: "Mole'u aç",
+    tray_quit: "Çık",
 };
 
 /// True if the user's Windows locale is Turkish.

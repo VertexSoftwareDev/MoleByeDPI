@@ -21,6 +21,9 @@ eframe = { version = "0.36", default-features = false, features = [
     "persistence",
 ] }
 image = { version = "0.25", default-features = false, features = ["png"] }
+# default-features off drops the Linux-only libxdo/gtk dependencies; we only build
+# for Windows.
+tray-icon = { version = "0.24", default-features = false }
 windows-sys = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_Globalization",
