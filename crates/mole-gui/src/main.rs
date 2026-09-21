@@ -7,6 +7,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod i18n;
 mod status;
 
 use std::path::PathBuf;
@@ -14,9 +15,11 @@ use std::time::{Duration, Instant};
 
 use eframe::egui;
 
+use i18n::Lang;
 use status::{Health, Status};
 
 const INITIAL_SIZE: [f32; 2] = [460.0, 560.0];
+const LANG_KEY: &str = "mole_lang";
 
 fn main() -> eframe::Result {
     let mut viewport = egui::ViewportBuilder::default()
@@ -35,7 +38,7 @@ fn main() -> eframe::Result {
             centered: true,
             ..Default::default()
         },
-        Box::new(|_cc| Ok(Box::new(MoleApp::new()))),
+        Box::new(|cc| Ok(Box::new(MoleApp::new(cc)))),
     )
 }
 
@@ -45,15 +48,22 @@ struct MoleApp {
     /// Path to the CLI we relaunch elevated for privileged actions.
     mole_exe: PathBuf,
     last_action: Option<String>,
+    lang: Lang,
 }
 
 impl MoleApp {
-    fn new() -> MoleApp {
+    fn new(cc: &eframe::CreationContext<'_>) -> MoleApp {
+        // Restore the saved language, else follow the OS locale.
+        let lang = cc
+            .storage
+            .and_then(|s| eframe::get_value::<Lang>(s, LANG_KEY))
+            .unwrap_or_default();
         MoleApp {
             status: Status::gather(),
             last_refresh: Instant::now(),
             mole_exe: mole_exe_path(),
             last_action: None,
+            lang,
         }
     }
 
@@ -65,8 +75,8 @@ impl MoleApp {
     /// Relaunch the CLI elevated with the given arguments (a UAC prompt appears).
     fn run_elevated(&mut self, args: &str) {
         match elevate::run(&self.mole_exe, args) {
-            Ok(()) => self.last_action = Some(format!("Started: mole {args}")),
-            Err(e) => self.last_action = Some(format!("Could not start mole {args}: {e}")),
+            Ok(()) => self.last_action = Some(self.lang.started(args)),
+            Err(e) => self.last_action = Some(self.lang.could_not_start(args, &e)),
         }
     }
 }
@@ -80,14 +90,26 @@ impl eframe::App for MoleApp {
         ctx.request_repaint_after(Duration::from_secs(2));
     }
 
+    /// Persist the chosen language across runs.
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        eframe::set_value(storage, LANG_KEY, &self.lang);
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        ui.add_space(12.0);
-        headline(ui, &self.status);
+        let s = self.lang.strings();
+
+        // Top bar: title-side space and a TR/EN switch on the right.
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            self.language_switch(ui);
+        });
+
+        ui.add_space(4.0);
+        headline(ui, &self.status, s);
         ui.add_space(8.0);
         ui.separator();
         ui.add_space(8.0);
 
-        details(ui, &self.status);
+        details(ui, &self.status, self.lang);
         ui.add_space(12.0);
         ui.separator();
         ui.add_space(12.0);
@@ -101,94 +123,90 @@ impl eframe::App for MoleApp {
 
         ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
             ui.add_space(6.0);
-            ui.label(
-                egui::RichText::new("If Mole stops, your internet keeps working (fail-open).")
-                    .weak()
-                    .small(),
-            );
-            ui.label(
-                egui::RichText::new("Mole — köstebek. Duvarı yıkmaz, altından geçer.")
-                    .weak()
-                    .small(),
-            );
+            ui.label(egui::RichText::new(s.failopen).weak().small());
+            ui.label(egui::RichText::new(s.tagline).weak().small());
         });
     }
 }
 
-fn headline(ui: &mut egui::Ui, status: &Status) {
-    let (dot, text, color) = match status.headline() {
-        Health::Protected => (
-            "●",
-            "Protected — a bypass is applied",
-            egui::Color32::from_rgb(60, 190, 90),
-        ),
-        Health::Idle => (
-            "●",
-            "Idle — measured but not running",
-            egui::Color32::from_rgb(220, 170, 60),
-        ),
-        Health::Off => (
-            "●",
-            "Off — not measured yet",
-            egui::Color32::from_rgb(150, 150, 150),
-        ),
+impl MoleApp {
+    /// A small TR/EN toggle.
+    fn language_switch(&mut self, ui: &mut egui::Ui) {
+        let tip = self.lang.strings().language_tooltip;
+        egui::ComboBox::from_id_salt("language")
+            .selected_text(self.lang.label())
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut self.lang, Lang::Tr, Lang::Tr.label());
+                ui.selectable_value(&mut self.lang, Lang::En, Lang::En.label());
+            })
+            .response
+            .on_hover_text(tip);
+    }
+}
+
+fn headline(ui: &mut egui::Ui, status: &Status, s: &i18n::Strings) {
+    let (text, color) = match status.headline() {
+        Health::Protected => (s.protected, egui::Color32::from_rgb(60, 190, 90)),
+        Health::Idle => (s.idle, egui::Color32::from_rgb(220, 170, 60)),
+        Health::Off => (s.off, egui::Color32::from_rgb(150, 150, 150)),
     };
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(dot).color(color).size(22.0));
+        ui.label(egui::RichText::new("●").color(color).size(22.0));
         ui.heading(text);
     });
 }
 
-fn details(ui: &mut egui::Ui, status: &Status) {
+fn details(ui: &mut egui::Ui, status: &Status, lang: Lang) {
+    let s = lang.strings();
     row(
         ui,
-        "Service",
+        s.service,
         match status.service_state {
-            Some(4) => "running".into(),
-            Some(1) => "installed, stopped".into(),
-            Some(_) => "installed, transitioning".into(),
-            None => "not installed".into(),
+            Some(4) => s.running.into(),
+            Some(1) => s.installed_stopped.into(),
+            Some(_) => s.installed_transitioning.into(),
+            None => s.not_installed.into(),
         },
     );
     match &status.config {
         Some(c) => {
-            row(ui, "Strategy", c.strategy.clone());
-            row(ui, "Resolver", c.resolver.clone());
+            row(ui, s.strategy, c.strategy.clone());
+            row(ui, s.resolver, c.resolver.clone());
             row(
                 ui,
-                "Block QUIC",
+                s.block_quic,
                 if c.block_quic {
-                    "yes".into()
+                    s.yes.into()
                 } else {
-                    "no".into()
+                    s.no.into()
                 },
             );
         }
-        None => row(ui, "Strategy", "none chosen yet".into()),
+        None => row(ui, s.strategy, s.none_chosen.into()),
     }
     row(
         ui,
-        "Administrator",
+        s.administrator,
         if status.elevated {
-            "yes".into()
+            s.yes.into()
         } else {
-            "no (actions will ask)".into()
+            s.admin_no.into()
         },
     );
     row(
         ui,
-        "Driver",
+        s.driver,
         if status.driver_available {
-            "WinDivert found".into()
+            s.driver_found.into()
         } else {
-            "WinDivert missing".into()
+            s.driver_missing.into()
         },
     );
     if let Some(av) = &status.antivirus {
-        warn_row(ui, "Antivirus", format!("{av} — its shield may interfere"));
+        warn_row(ui, s.antivirus, lang.antivirus_interferes(av));
     }
     if let Some(r) = &status.rival {
-        warn_row(ui, "Rival tool", format!("{r} is running — keep only one"));
+        warn_row(ui, s.rival_tool, lang.rival_running(r));
     }
 }
 
@@ -212,10 +230,16 @@ fn warn_row(ui: &mut egui::Ui, label: &str, value: String) {
 
 impl MoleApp {
     fn controls(&mut self, ui: &mut egui::Ui) {
+        let s = self.lang.strings();
+        let (measure, measure_hover) = (s.measure_protect, s.measure_hover);
+        let (stop, stop_hover) = (s.stop_remove, s.stop_hover);
+        let refresh = s.refresh;
+        let rival_warning = s.rival_warning;
+
         ui.horizontal_wrapped(|ui| {
             if ui
-                .button(egui::RichText::new("🔎  Measure & protect").size(15.0))
-                .on_hover_text("Find the strategy that works on this line, then install the service. Asks for administrator.")
+                .button(egui::RichText::new(measure).size(15.0))
+                .on_hover_text(measure_hover)
                 .clicked()
             {
                 self.run_elevated("install --auto");
@@ -223,14 +247,14 @@ impl MoleApp {
 
             if self.status.is_installed()
                 && ui
-                    .button(egui::RichText::new("⏹  Stop & remove").size(15.0))
-                    .on_hover_text("Stop and uninstall the service. Traffic then flows normally.")
+                    .button(egui::RichText::new(stop).size(15.0))
+                    .on_hover_text(stop_hover)
                     .clicked()
             {
                 self.run_elevated("uninstall");
             }
 
-            if ui.button("↻  Refresh").clicked() {
+            if ui.button(refresh).clicked() {
                 self.refresh();
             }
         });
@@ -238,11 +262,9 @@ impl MoleApp {
         if self.status.rival.is_some() {
             ui.add_space(6.0);
             ui.label(
-                egui::RichText::new(
-                    "Stop the rival tool first, or the two will fight over the same handshakes.",
-                )
-                .color(egui::Color32::from_rgb(220, 170, 60))
-                .small(),
+                egui::RichText::new(rival_warning)
+                    .color(egui::Color32::from_rgb(220, 170, 60))
+                    .small(),
             );
         }
     }

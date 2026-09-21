@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 mole-core = { path = "../mole-core" }
+serde = { workspace = true }
 # `glow` rather than `wgpu`: a plain control panel, a fast start, no Direct3D
 # stack — the same choice Burrow made.
 eframe = { version = "0.36", default-features = false, features = [
@@ -21,6 +22,7 @@ eframe = { version = "0.36", default-features = false, features = [
 image = { version = "0.25", default-features = false, features = ["png"] }
 windows-sys = { workspace = true, features = [
     "Win32_Foundation",
+    "Win32_Globalization",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
