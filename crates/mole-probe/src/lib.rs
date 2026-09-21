@@ -76,6 +76,55 @@ pub struct ProbeReport {
     pub results: Vec<StrategyResult>,
 }
 
+/// A shareable, privacy-preserving record of what worked on one line. Built for
+/// the community map from the plan: pool these across operators and cities and a
+/// picture of "what works where" emerges that no one has today. It carries only
+/// technical facts — the strategies tried and the results, the blocked targets'
+/// own public addresses, and an operator name *only if the user typed one*. It
+/// never contains the user's public IP, any browsed site beyond the probe
+/// targets, or anything identifying.
+#[derive(Serialize, Clone)]
+pub struct CommunityReport {
+    pub schema: u32,
+    pub generated_unix: u64,
+    /// Operator/ISP name — present only if the user supplied it.
+    pub operator: Option<String>,
+    /// A rival DPI tool that was running and may have skewed results.
+    pub conflict: Option<String>,
+    /// A privacy statement describing exactly what is and isn't included.
+    pub privacy: String,
+    pub targets: Vec<ProbeReport>,
+}
+
+/// Run the full battery across `hosts` and assemble a community report.
+pub fn community_report(
+    hosts: &[String],
+    api: Arc<WinDivertApi>,
+    operator: Option<String>,
+) -> CommunityReport {
+    let opts = ProbeOptions {
+        stop_on_first: false, // measure every strategy for the map
+        ..ProbeOptions::default()
+    };
+    let targets: Vec<ProbeReport> = hosts.iter().map(|h| run(h, api.clone(), &opts)).collect();
+    let conflict = mole_core::service::conflicting_dpi_service().map(|s| s.to_string());
+    CommunityReport {
+        schema: 1,
+        generated_unix: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+        operator,
+        conflict,
+        privacy: "Contains only: strategies tried and their results, the blocked \
+                  targets' own addresses, and an operator name if you supplied one. \
+                  Contains no personal data — not your public IP, not any site you \
+                  visited, nothing identifying."
+            .to_string(),
+        targets,
+    }
+}
+
 /// Options for a run.
 pub struct ProbeOptions {
     pub resolver: Resolver,

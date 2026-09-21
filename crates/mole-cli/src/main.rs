@@ -34,6 +34,7 @@ fn main() {
         "install" => cmd_install(rest),
         "uninstall" => cmd_uninstall(),
         "status" => cmd_status(),
+        "report" => cmd_report(rest),
         "service-run" => cmd_service_run(),
         "help" | "--help" | "-h" => {
             print_help();
@@ -66,6 +67,9 @@ fn print_help() {
          \x20                          install and start the self-healing service\n\
          \x20 mole uninstall           stop and remove the service, clean up\n\
          \x20 mole status              show the service state and saved strategy\n\
+         \x20 mole report [--operator NAME] [--out FILE] [host ...]\n\
+         \x20                          measure everything and write a shareable,\n\
+         \x20                          privacy-preserving report for the community map\n\
          \n\
          `probe` with no host uses a small set of commonly-blocked targets.\n\
          --all measures every strategy (for the community map); default stops at\n\
@@ -731,6 +735,81 @@ fn cmd_status() -> i32 {
         println!("Note: '{svc}' is also running — it will fight Mole; keep only one.");
     }
     0
+}
+
+fn cmd_report(args: &[String]) -> i32 {
+    let mut operator: Option<String> = None;
+    let mut out = "mole-report.json".to_string();
+    let mut hosts: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--operator" => {
+                i += 1;
+                operator = args.get(i).cloned();
+            }
+            "--out" => {
+                i += 1;
+                match args.get(i) {
+                    Some(p) => out = p.clone(),
+                    None => {
+                        eprintln!("mole report: --out needs a file path");
+                        return 2;
+                    }
+                }
+            }
+            other if other.starts_with("--") => {
+                eprintln!("mole report: unknown option '{other}'");
+                return 2;
+            }
+            other => hosts.push(other.to_string()),
+        }
+        i += 1;
+    }
+    if hosts.is_empty() {
+        hosts = DEFAULT_TARGETS.iter().map(|s| s.to_string()).collect();
+    }
+    if !is_elevated() {
+        eprintln!("mole report: needs administrator rights (WinDivert driver).");
+        return 1;
+    }
+    let api = match WinDivertApi::load() {
+        Ok(api) => Arc::new(api),
+        Err(e) => {
+            eprintln!("mole report: {e}");
+            return 1;
+        }
+    };
+    if let Some(svc) = conflicting_dpi_service() {
+        println!("WARNING: '{svc}' is running and will skew results; stop it first (`sc stop {svc}`).\n");
+    }
+
+    println!("Measuring every strategy across {} target(s)...", hosts.len());
+    let report = mole_probe::community_report(&hosts, api, operator);
+    match serde_json::to_string_pretty(&report) {
+        Ok(s) => {
+            if let Err(e) = std::fs::write(&out, s) {
+                eprintln!("mole report: could not write {out}: {e}");
+                return 1;
+            }
+            let bypassed = report
+                .targets
+                .iter()
+                .filter(|t| t.winner.is_some())
+                .count();
+            println!(
+                "Wrote {out}. {} of {} target(s) bypassed. It contains only technical data — \n\
+                 safe to share for the community map.",
+                bypassed,
+                report.targets.len()
+            );
+            0
+        }
+        Err(e) => {
+            eprintln!("mole report: could not serialize: {e}");
+            1
+        }
+    }
 }
 
 /// The SCM entry point (internal). Fails loudly only to the event log path; here
