@@ -12,7 +12,7 @@
 
 use std::sync::OnceLock;
 
-use crate::checksum::tcp_checksum;
+use crate::checksum::{tcp_checksum, tcp_checksum6};
 use crate::packet::{find_sni, TcpView};
 use crate::windivert::Packet;
 
@@ -286,13 +286,12 @@ fn split(orig: &Packet, view: &TcpView, cut: Cut, disorder: bool) -> Vec<Emit> {
     let Some(off) = cut_offset(payload, cut) else {
         return vec![pass(orig)];
     };
-    let hdr = view.payload_offset;
     let seq = read_seq(&orig.data, view.tcp_offset);
 
-    let first = build_segment(&orig.data, hdr, &payload[..off], seq, orig.addr);
+    let first = build_segment(&orig.data, view, &payload[..off], seq, orig.addr);
     let second = build_segment(
         &orig.data,
-        hdr,
+        view,
         &payload[off..],
         seq.wrapping_add(off as u32),
         orig.addr,
@@ -315,29 +314,38 @@ fn split(orig: &Packet, view: &TcpView, cut: Cut, disorder: bool) -> Vec<Emit> {
     }
 }
 
-/// Build one TCP segment: the original IP+TCP headers (up to `hdr`) followed by
-/// `new_payload`, with the IP total-length and TCP sequence fields fixed up.
-/// Checksums are left for the send path unless the caller corrupts them.
+/// Build one TCP segment: the original IP+TCP headers (up to the payload) followed
+/// by `new_payload`, with the IP length and TCP sequence fixed up. Checksums are
+/// left for the send path unless the caller corrupts them.
 fn build_segment(
     orig: &[u8],
-    hdr: usize,
+    view: &TcpView,
     new_payload: &[u8],
     seq: u32,
     addr: crate::ffi::WinDivertAddress,
 ) -> Packet {
+    let hdr = view.payload_offset;
     let mut data = Vec::with_capacity(hdr + new_payload.len());
     data.extend_from_slice(&orig[..hdr]);
     data.extend_from_slice(new_payload);
 
-    // IP total length (offset 2, 2 bytes).
-    let total = data.len() as u16;
-    data[2..4].copy_from_slice(&total.to_be_bytes());
-
-    // TCP sequence number lives at tcp_offset + 4. tcp_offset = ihl.
-    let ihl = (orig[0] & 0x0F) as usize * 4;
-    write_seq(&mut data, ihl, seq);
+    set_ip_length(&mut data, view);
+    write_seq(&mut data, view.tcp_offset, seq);
 
     Packet { data, addr }
+}
+
+/// Fix the IP length field after resizing: IPv4's total length (whole packet) at
+/// offset 2, or IPv6's payload length (everything after the 40-byte header) at
+/// offset 4. IPv6 has no header checksum to touch.
+fn set_ip_length(data: &mut [u8], view: &TcpView) {
+    if view.version == 4 {
+        let total = data.len() as u16;
+        data[2..4].copy_from_slice(&total.to_be_bytes());
+    } else {
+        let payload_len = data.len().saturating_sub(40) as u16;
+        data[4..6].copy_from_slice(&payload_len.to_be_bytes());
+    }
 }
 
 fn read_seq(data: &[u8], tcp_offset: usize) -> u32 {
@@ -361,65 +369,81 @@ fn write_seq(data: &mut [u8], tcp_offset: usize, seq: u32) {
 /// reaches it. Carrying the *real* SNI here would poison nothing; the benign
 /// name is the whole point.
 fn make_decoy(orig: &Packet, view: &TcpView, decoy: Decoy) -> Option<Emit> {
-    let ihl = (orig.data[0] & 0x0F) as usize * 4;
+    let tcp_off = view.tcp_offset;
     let hdr = view.payload_offset;
     let fake = benign_fake_hello();
 
-    // Real headers + benign payload, with the IP total length fixed up.
+    // Real headers + benign payload, with the IP length fixed up (v4 or v6).
     let mut data = Vec::with_capacity(hdr + fake.len());
     data.extend_from_slice(&orig.data[..hdr]);
     data.extend_from_slice(fake);
-    let total = data.len() as u16;
-    data[2..4].copy_from_slice(&total.to_be_bytes());
+    set_ip_length(&mut data, view);
 
-    let real_seq = read_seq(&orig.data, ihl);
+    let real_seq = read_seq(&orig.data, tcp_off);
+
+    let emit = |data, fix| {
+        Some(Emit {
+            packet: Packet {
+                data,
+                addr: orig.addr,
+            },
+            fix_checksums: fix,
+        })
+    };
 
     match decoy {
         Decoy::LowTtl(ttl) => {
             // Overlap the real sequence so the benign name lands where the filter
-            // looks; die early via a low TTL. Send path fixes the checksums.
-            write_seq(&mut data, ihl, real_seq);
-            data[8] = ttl;
-            Some(Emit {
-                packet: Packet {
-                    data,
-                    addr: orig.addr,
-                },
-                fix_checksums: true,
-            })
+            // looks; die early via a low TTL / hop limit. Send path fixes checksums.
+            write_seq(&mut data, tcp_off, real_seq);
+            data[if view.version == 4 { 8 } else { 7 }] = ttl;
+            emit(data, true)
         }
         Decoy::BadChecksum => {
-            write_seq(&mut data, ihl, real_seq);
+            write_seq(&mut data, tcp_off, real_seq);
             // Correct the TCP checksum, then break it by one so it is definitely
             // invalid: the server's stack drops it, a filter that skips checksum
             // validation still reads the benign name.
-            let good = tcp_checksum(view.src, view.dst, &data[ihl..]);
+            let good = if view.version == 4 {
+                tcp_checksum(
+                    to4(view.src_bytes()),
+                    to4(view.dst_bytes()),
+                    &data[tcp_off..],
+                )
+            } else {
+                tcp_checksum6(
+                    &to16(view.src_bytes()),
+                    &to16(view.dst_bytes()),
+                    &data[tcp_off..],
+                )
+            };
             let bad = good.wrapping_add(1);
-            let pos = ihl + 16;
+            let pos = tcp_off + 16;
             data[pos..pos + 2].copy_from_slice(&bad.to_be_bytes());
-            let ip_sum = crate::checksum::ipv4_checksum(&data[..ihl]);
-            data[10..12].copy_from_slice(&ip_sum.to_be_bytes());
-            Some(Emit {
-                packet: Packet {
-                    data,
-                    addr: orig.addr,
-                },
-                fix_checksums: false, // keep our deliberately-wrong TCP checksum
-            })
+            // IPv4 has a header checksum to keep valid; IPv6 has none.
+            if view.version == 4 {
+                let ip_sum = crate::checksum::ipv4_checksum(&data[..tcp_off]);
+                data[10..12].copy_from_slice(&ip_sum.to_be_bytes());
+            }
+            emit(data, false) // keep our deliberately-wrong TCP checksum
         }
         Decoy::WrongSeq(offset) => {
             // A sequence far below the window: the server rejects it outright, but
             // a filter that inspects every packet still sees the benign name.
-            write_seq(&mut data, ihl, real_seq.wrapping_sub(offset));
-            Some(Emit {
-                packet: Packet {
-                    data,
-                    addr: orig.addr,
-                },
-                fix_checksums: true,
-            })
+            write_seq(&mut data, tcp_off, real_seq.wrapping_sub(offset));
+            emit(data, true)
         }
     }
+}
+
+fn to4(b: &[u8]) -> [u8; 4] {
+    [b[0], b[1], b[2], b[3]]
+}
+
+fn to16(b: &[u8]) -> [u8; 16] {
+    let mut a = [0u8; 16];
+    a.copy_from_slice(&b[..16]);
+    a
 }
 
 /// A cached benign ClientHello (an unblocked server name) used as the decoy body.
@@ -491,6 +515,76 @@ mod tests {
             },
             view,
         )
+    }
+
+    // IPv6(40)+TCP(20) packet carrying `payload`, dst port 443, seq = 1000.
+    fn packet6_with(payload: &[u8]) -> (Packet, TcpView) {
+        let mut data = vec![0u8; 40 + 20 + payload.len()];
+        data[0] = 0x60; // version 6
+        data[4..6].copy_from_slice(&((20 + payload.len()) as u16).to_be_bytes());
+        data[6] = 6; // TCP
+        data[7] = 64; // hop limit
+        data[24..40].copy_from_slice(&[0x20, 1, 0xd, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+        data[40 + 2..40 + 4].copy_from_slice(&443u16.to_be_bytes());
+        data[40 + 4..40 + 8].copy_from_slice(&1000u32.to_be_bytes());
+        data[40 + 12] = 0x50; // data offset 5
+        data[60..].copy_from_slice(payload);
+        let view = TcpView::parse(&data).unwrap();
+        (
+            Packet {
+                data,
+                addr: WinDivertAddress::zeroed(),
+            },
+            view,
+        )
+    }
+
+    #[test]
+    fn ipv6_split_fixes_payload_length_and_seq() {
+        let (pkt, view) = packet6_with(b"ABCDEFGHIJ");
+        let out = Strategy::Split { cut: Cut::Fixed(4) }.apply(&pkt, &view);
+        assert_eq!(out.len(), 2);
+        let a = &out[0].packet.data;
+        // First: 4 payload bytes, seq 1000, IPv6 payload length = 20 + 4 = 24.
+        assert_eq!(&a[60..], b"ABCD");
+        assert_eq!(u32::from_be_bytes([a[44], a[45], a[46], a[47]]), 1000);
+        assert_eq!(u16::from_be_bytes([a[4], a[5]]), 24);
+        let b = &out[1].packet.data;
+        // Second: 6 payload bytes, seq 1004, payload length = 20 + 6 = 26.
+        assert_eq!(&b[60..], b"EFGHIJ");
+        assert_eq!(u32::from_be_bytes([b[44], b[45], b[46], b[47]]), 1004);
+        assert_eq!(u16::from_be_bytes([b[4], b[5]]), 26);
+    }
+
+    #[test]
+    fn ipv6_low_ttl_decoy_sets_hop_limit_not_ttl() {
+        let (pkt, view) = packet6_with(b"hello");
+        let out = Strategy::Fake {
+            decoy: Decoy::LowTtl(4),
+        }
+        .apply(&pkt, &view);
+        // IPv6 hop limit is at offset 7 (not 8 like IPv4 TTL).
+        assert_eq!(out[0].packet.data[7], 4);
+        assert!(out[0].fix_checksums);
+    }
+
+    #[test]
+    fn ipv6_bad_checksum_decoy_uses_v6_pseudo_header() {
+        let (pkt, view) = packet6_with(b"hello handshake");
+        let out = Strategy::Fake {
+            decoy: Decoy::BadChecksum,
+        }
+        .apply(&pkt, &view);
+        assert!(!out[0].fix_checksums);
+        let d = &out[0].packet.data;
+        let stored = u16::from_be_bytes([d[40 + 16], d[40 + 17]]);
+        // The stored checksum must differ from the correct v6 checksum.
+        let mut src = [0u8; 16];
+        let mut dst = [0u8; 16];
+        src.copy_from_slice(&d[8..24]);
+        dst.copy_from_slice(&d[24..40]);
+        let correct = crate::checksum::tcp_checksum6(&src, &dst, &d[40..]);
+        assert_ne!(stored, correct);
     }
 
     #[test]

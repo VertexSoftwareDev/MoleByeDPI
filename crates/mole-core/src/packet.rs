@@ -3,14 +3,18 @@
 //! engine's edits live elsewhere. Kept deliberately small — Mole only ever needs
 //! to reach the SNI and the TCP payload boundary, not a full packet decoder.
 
-/// A parsed view of an IPv4 + TCP packet, with byte ranges into the original
-/// buffer so the filter engine can splice without re-parsing.
+/// A parsed view of an IPv4- or IPv6-over-TCP packet, with byte ranges into the
+/// original buffer so the filter engine can splice without re-parsing. The IP
+/// addresses are stored full width; `addr_len` says how many bytes are meaningful.
 pub struct TcpView {
-    pub src: [u8; 4],
-    pub dst: [u8; 4],
+    /// 4 or 6.
+    pub version: u8,
+    src: [u8; 16],
+    dst: [u8; 16],
+    addr_len: usize,
     pub src_port: u16,
     pub dst_port: u16,
-    /// Where the IP header ends / TCP header begins.
+    /// Where the IP header(s) end / TCP header begins.
     pub tcp_offset: usize,
     /// Where the TCP payload begins.
     pub payload_offset: usize,
@@ -19,42 +23,102 @@ pub struct TcpView {
 }
 
 impl TcpView {
-    /// Parse an IPv4/TCP packet. Returns `None` for anything that is not IPv4+TCP
-    /// or is too short to trust.
+    /// Parse an IPv4/TCP or IPv6/TCP packet. Returns `None` for anything else or
+    /// too short to trust.
     pub fn parse(pkt: &[u8]) -> Option<TcpView> {
+        match pkt.first().map(|b| b >> 4)? {
+            4 => Self::parse_v4(pkt),
+            6 => Self::parse_v6(pkt),
+            _ => None,
+        }
+    }
+
+    fn parse_v4(pkt: &[u8]) -> Option<TcpView> {
         if pkt.len() < 20 {
             return None;
-        }
-        let version = pkt[0] >> 4;
-        if version != 4 {
-            return None; // IPv6 is handled on its own path; not parsed here yet.
         }
         let ihl = (pkt[0] & 0x0F) as usize * 4;
         if ihl < 20 || pkt.len() < ihl + 20 {
             return None;
         }
-        let protocol = pkt[9];
-        if protocol != 6 {
+        if pkt[9] != 6 {
             return None; // not TCP
         }
-        let src = [pkt[12], pkt[13], pkt[14], pkt[15]];
-        let dst = [pkt[16], pkt[17], pkt[18], pkt[19]];
+        let mut src = [0u8; 16];
+        let mut dst = [0u8; 16];
+        src[..4].copy_from_slice(&pkt[12..16]);
+        dst[..4].copy_from_slice(&pkt[16..20]);
+        Self::finish(pkt, 4, src, dst, 4, ihl)
+    }
 
-        let tcp = &pkt[ihl..];
+    fn parse_v6(pkt: &[u8]) -> Option<TcpView> {
+        if pkt.len() < 40 {
+            return None;
+        }
+        // Walk past any extension headers to the TCP header.
+        let mut next = pkt[6];
+        let mut off = 40usize;
+        loop {
+            match next {
+                6 => break, // TCP
+                // Hop-by-hop, routing, destination options: length in 8-octet
+                // units, not counting the first 8 bytes.
+                0 | 43 | 60 => {
+                    if off + 2 > pkt.len() {
+                        return None;
+                    }
+                    next = pkt[off];
+                    off += (pkt[off + 1] as usize + 1) * 8;
+                }
+                // Fragment header: fixed 8 bytes.
+                44 => {
+                    if off + 8 > pkt.len() {
+                        return None;
+                    }
+                    next = pkt[off];
+                    off += 8;
+                }
+                _ => return None, // not TCP / header we don't decode
+            }
+            if off + 20 > pkt.len() {
+                return None;
+            }
+        }
+        if off + 20 > pkt.len() {
+            return None;
+        }
+        let mut src = [0u8; 16];
+        let mut dst = [0u8; 16];
+        src.copy_from_slice(&pkt[8..24]);
+        dst.copy_from_slice(&pkt[24..40]);
+        Self::finish(pkt, 6, src, dst, 16, off)
+    }
+
+    fn finish(
+        pkt: &[u8],
+        version: u8,
+        src: [u8; 16],
+        dst: [u8; 16],
+        addr_len: usize,
+        tcp_offset: usize,
+    ) -> Option<TcpView> {
+        let tcp = &pkt[tcp_offset..];
         let src_port = u16::from_be_bytes([tcp[0], tcp[1]]);
         let dst_port = u16::from_be_bytes([tcp[2], tcp[3]]);
         let data_offset = (tcp[12] >> 4) as usize * 4;
-        if data_offset < 20 || pkt.len() < ihl + data_offset {
+        if data_offset < 20 || pkt.len() < tcp_offset + data_offset {
             return None;
         }
         let flags = tcp[13];
         Some(TcpView {
+            version,
             src,
             dst,
+            addr_len,
             src_port,
             dst_port,
-            tcp_offset: ihl,
-            payload_offset: ihl + data_offset,
+            tcp_offset,
+            payload_offset: tcp_offset + data_offset,
             syn: flags & 0x02 != 0,
             ack: flags & 0x10 != 0,
         })
@@ -62,6 +126,27 @@ impl TcpView {
 
     pub fn payload<'a>(&self, pkt: &'a [u8]) -> &'a [u8] {
         &pkt[self.payload_offset..]
+    }
+
+    /// The source IP address bytes (4 for IPv4, 16 for IPv6).
+    pub fn src_bytes(&self) -> &[u8] {
+        &self.src[..self.addr_len]
+    }
+
+    /// The destination IP address bytes (4 for IPv4, 16 for IPv6).
+    pub fn dst_bytes(&self) -> &[u8] {
+        &self.dst[..self.addr_len]
+    }
+
+    /// The destination as a printable address.
+    pub fn dst_ip(&self) -> std::net::IpAddr {
+        if self.version == 4 {
+            std::net::IpAddr::from([self.dst[0], self.dst[1], self.dst[2], self.dst[3]])
+        } else {
+            let mut a = [0u8; 16];
+            a.copy_from_slice(&self.dst);
+            std::net::IpAddr::from(a)
+        }
     }
 }
 
@@ -210,6 +295,26 @@ mod tests {
         udp[0] = 0x45;
         udp[9] = 17; // UDP
         assert!(TcpView::parse(&udp).is_none());
+    }
+
+    #[test]
+    fn parses_ipv6_tcp() {
+        // IPv6(40) + TCP(20) + 5 payload bytes, dst port 443, next-header TCP.
+        let mut p = vec![0u8; 40 + 20 + 5];
+        p[0] = 0x60; // version 6
+        p[4..6].copy_from_slice(&25u16.to_be_bytes()); // payload length = 20 + 5
+        p[6] = 6; // next header = TCP
+        p[7] = 64; // hop limit
+        p[24..40].copy_from_slice(&[0x20, 0x01, 0xd, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]); // dst
+        p[40 + 2..40 + 4].copy_from_slice(&443u16.to_be_bytes());
+        p[40 + 12] = 0x50; // data offset 5
+        let v = TcpView::parse(&p).unwrap();
+        assert_eq!(v.version, 6);
+        assert_eq!(v.dst_port, 443);
+        assert_eq!(v.tcp_offset, 40);
+        assert_eq!(v.payload_offset, 60);
+        assert_eq!(v.dst_bytes().len(), 16);
+        assert_eq!(v.dst_ip().to_string(), "2001:db8::1");
     }
 
     #[test]

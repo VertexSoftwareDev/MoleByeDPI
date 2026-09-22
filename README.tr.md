@@ -89,9 +89,12 @@ araç aynı el sıkışmayı yeniden yazınca birbiriyle kavga eder — birini t
 
 ## Bilinen sınırlar
 
-- **Şimdilik yalnız IPv4.** Filtre ve probe IPv4/TCP ayrıştırır; IPv6 el sıkışması
-  dokunulmadan geçer. Türkiye'deki DPI çoğunlukla IPv4'te çalışır, ama IPv6 üzerinden
-  gelen çift-yığın siteler henüz kapsanmıyor.
+- **IPv6** canlı filtre motorunda destekleniyor — ayrıştırma, split/decoy
+  stratejileri (TTL yerine hop-limit, IPv6 pseudo-header checksum, IP başlık
+  checksum'ı yok) ve motorun kendisi iki aileyi de işliyor; byte-byte birim
+  testleriyle doğrulandı. **Canlı doğrulanmadı**: geliştiricinin hattında çalışan
+  IPv6 yok, test edecek v6 trafiği yoktu. Probe ölçümü hâlâ IPv4 üzerinden yapar,
+  motor seçilen stratejiyi v6 el sıkışmalarına da uygular.
 - **QUIC aşılmıyor, yan geçiliyor:** `--block-quic` UDP :443'ü düşürür, tarayıcı
   TCP'ye döner. Tam QUIC desync sonraki iş.
 - **Bozuk-checksum sahteleri, NIC checksum offload olan makinelerde güvenilmez** —

@@ -127,9 +127,12 @@ later phase; two tools rewriting the same handshake fight each other.
 
 ## Known limits
 
-- **IPv4 only** for now. The filter and probe parse IPv4/TCP; an IPv6 handshake
-  passes through unshaped. Most Turkish DPI acts on IPv4, but dual-stack sites over
-  IPv6 aren't yet covered.
+- **IPv6** is handled by the live filter engine — parsing, the split/decoy
+  strategies (hop limit instead of TTL, IPv6 pseudo-header checksum, no IP header
+  checksum) and the engine all take both families, and it's unit-tested byte for
+  byte. It is *not* live-verified: the maintainer's line has no working IPv6, so
+  there was no v6 traffic to test against. The probe still measures over IPv4 and
+  the engine applies the chosen strategy to v6 handshakes too.
 - **QUIC** is sidestepped, not bypassed: `--block-quic` drops UDP :443 so browsers
   fall back to TCP. A full QUIC Initial desync is future work.
 - **Bad-checksum decoys are unreliable where the NIC does TCP checksum offload** —

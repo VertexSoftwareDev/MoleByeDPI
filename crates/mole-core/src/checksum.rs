@@ -51,6 +51,28 @@ pub fn tcp_checksum(src: [u8; 4], dst: [u8; 4], tcp: &[u8]) -> u16 {
     ones_complement_sum(&buf, pseudo)
 }
 
+/// TCP checksum over the IPv6 pseudo-header + TCP segment. `src`/`dst` are the
+/// 16-byte addresses. IPv6 has no header checksum of its own.
+pub fn tcp_checksum6(src: &[u8; 16], dst: &[u8; 16], tcp: &[u8]) -> u16 {
+    let mut sum = 0u32;
+    for addr in [src, dst] {
+        let mut i = 0;
+        while i < 16 {
+            sum += u16::from_be_bytes([addr[i], addr[i + 1]]) as u32;
+            i += 2;
+        }
+    }
+    let len = tcp.len() as u32;
+    sum += (len >> 16) & 0xFFFF;
+    sum += len & 0xFFFF;
+    sum += 6; // next header = TCP
+
+    let mut buf = tcp.to_vec();
+    buf[16] = 0;
+    buf[17] = 0;
+    ones_complement_sum(&buf, sum)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

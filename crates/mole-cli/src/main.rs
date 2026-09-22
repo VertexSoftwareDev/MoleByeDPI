@@ -198,7 +198,7 @@ fn wait_one(handle: Arc<WinDivert>, budget: Duration) -> Option<String> {
         match handle.recv() {
             Ok(Some(pkt)) => {
                 let Some(view) = TcpView::parse(&pkt.data) else {
-                    return Some("captured a non-IPv4 packet".to_string());
+                    return Some("captured a non-IP/TCP packet".to_string());
                 };
                 let payload = view.payload(&pkt.data);
                 // Skip bare ACKs (no payload) and keep waiting for a data packet
@@ -206,15 +206,12 @@ fn wait_one(handle: Arc<WinDivert>, budget: Duration) -> Option<String> {
                 if payload.is_empty() {
                     continue;
                 }
-                let d = view.dst;
+                let d = view.dst_ip();
                 return Some(match find_sni(payload) {
                     Some((host, _)) => {
-                        format!(
-                            "{}.{}.{}.{}:{}  SNI {host}",
-                            d[0], d[1], d[2], d[3], view.dst_port
-                        )
+                        format!("{d}:{}  SNI {host}", view.dst_port)
                     }
-                    None => format!("{}.{}.{}.{}:{}", d[0], d[1], d[2], d[3], view.dst_port),
+                    None => format!("{d}:{}", view.dst_port),
                 });
             }
             Ok(None) => return None, // budget elapsed, handle shut down
@@ -330,18 +327,14 @@ fn cmd_capture(args: &[String]) -> i32 {
                     continue;
                 }
                 seen += 1;
-                let d = view.dst;
+                let d = view.dst_ip();
                 match sni {
                     Some((host, off)) => println!(
-                        "{seen:>3}. {}.{}.{}.{}:{}  SNI {host}  (name at payload offset {off})",
-                        d[0], d[1], d[2], d[3], view.dst_port
+                        "{seen:>3}. {d}:{}  SNI {host}  (name at payload offset {off})",
+                        view.dst_port
                     ),
                     None => println!(
-                        "{seen:>3}. {}.{}.{}.{}:{}  ({} payload bytes, no SNI)",
-                        d[0],
-                        d[1],
-                        d[2],
-                        d[3],
+                        "{seen:>3}. {d}:{}  ({} payload bytes, no SNI)",
                         view.dst_port,
                         payload.len()
                     ),
