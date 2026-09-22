@@ -470,6 +470,14 @@ fn cmd_probe(args: &[String]) -> i32 {
              \x20   sc stop {svc}\n"
         );
     }
+    // Mole's own running service shapes these probe connections too — say so.
+    if mole_core::winservice::query_state() == Some(4) {
+        println!(
+            "NOTE: Mole's own service is running and shapes these connections, so the\n\
+             control and per-strategy readings reflect the applied strategy, not the raw\n\
+             line. Run `mole uninstall` first for a clean measurement.\n"
+        );
+    }
 
     let mut reports = Vec::new();
     for host in &hosts {
@@ -741,6 +749,15 @@ fn cmd_install(args: &[String]) -> i32 {
              Remove or stop it first (`sc stop {svc}`)."
         );
         return 1;
+    }
+
+    // Clear any existing Mole service first. This frees the line for a clean
+    // measurement (its engine would otherwise shape the probe's own connections)
+    // and lets the fresh install register — a service can't be created over itself.
+    if mole_core::winservice::query_state().is_some() {
+        println!("Replacing the current Mole service...");
+        let _ = mole_core::winservice::uninstall();
+        std::thread::sleep(std::time::Duration::from_millis(400));
     }
 
     let (_strategy, label, canary) = match pick_strategy(&api, auto, &hosts, label, "install") {
