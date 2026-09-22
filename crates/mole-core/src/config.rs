@@ -18,6 +18,11 @@ pub struct Config {
     /// Hold QUIC back so browsers fall onto TCP. Off unless the user asked.
     #[serde(default)]
     pub block_quic: bool,
+    /// The blocked site the winning strategy was found on. The service watches
+    /// exactly this one, so self-healing works on any line — not just where the
+    /// hardcoded default happens to be blocked. Empty falls back to a default.
+    #[serde(default)]
+    pub canary: String,
 }
 
 impl Config {
@@ -26,12 +31,19 @@ impl Config {
             strategy: strategy.to_string(),
             resolver: resolver.to_string(),
             block_quic: false,
+            canary: String::new(),
         }
     }
 
     /// Set whether the service should also block QUIC.
     pub fn quic(mut self, on: bool) -> Config {
         self.block_quic = on;
+        self
+    }
+
+    /// Set the blocked site the health monitor should watch.
+    pub fn canary(mut self, host: &str) -> Config {
+        self.canary = host.to_string();
         self
     }
 

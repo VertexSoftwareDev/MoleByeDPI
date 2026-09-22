@@ -13,9 +13,19 @@ use std::time::Duration;
 use mole_core::{winservice, Config, FilterEngine, QuicBlocker, Strategy, WinDivertApi};
 use mole_probe::{check_reachable, ProbeOptions, Reachable};
 
-/// The site the health monitor watches. If it is blocked while a working strategy
-/// is applied it will be open; if it goes blocked, the strategy has stopped working.
-const CANARY: &str = "www.roblox.com";
+/// Fallback canary if the config doesn't name the site the winner was found on.
+const DEFAULT_CANARY: &str = "www.roblox.com";
+
+/// The site the health monitor watches: the one the winning strategy was found
+/// blocked-then-open on at install, so self-healing works on any line — not just
+/// where the default happens to be blocked.
+fn canary_for(cfg: &Config) -> String {
+    if cfg.canary.trim().is_empty() {
+        DEFAULT_CANARY.to_string()
+    } else {
+        cfg.canary.clone()
+    }
+}
 
 fn health_interval() -> Duration {
     let secs = std::env::var("MOLE_HEALTH_SECS")
@@ -82,15 +92,17 @@ fn run_once() -> Outcome {
     let stopper = engine.stopper();
     winservice::register_stopper(Some(stopper.clone()));
 
-    // Health monitor: watch the canary; on repeated failure, break the engine loop
-    // and ask for a re-measure.
+    // Health monitor: watch this line's own blocked site; on repeated failure,
+    // break the engine loop and ask for a re-measure.
+    let canary = canary_for(&cfg);
     let remeasure = Arc::new(AtomicBool::new(false));
     let health_active = Arc::new(AtomicBool::new(true));
     let health = {
         let stopper = stopper.clone();
         let remeasure = remeasure.clone();
         let active = health_active.clone();
-        std::thread::spawn(move || health_loop(stopper, remeasure, active))
+        let canary = canary.clone();
+        std::thread::spawn(move || health_loop(canary, stopper, remeasure, active))
     };
 
     // Run until the handle is shut down (by the SCM stop, or by the health monitor).
@@ -110,7 +122,7 @@ fn run_once() -> Outcome {
     if winservice::should_stop() {
         Outcome::Stopped
     } else if want_remeasure {
-        remeasure_and_save(&api, &cfg);
+        remeasure_and_save(&api, &cfg, &canary);
         Outcome::Remeasured
     } else {
         Outcome::Failed
@@ -121,6 +133,7 @@ fn run_once() -> Outcome {
 /// blocks (a strategy that stopped working); a success resets the count. On the
 /// threshold, flag a re-measure and unblock the engine loop.
 fn health_loop(
+    canary: String,
     stopper: Arc<mole_core::WinDivert>,
     remeasure: Arc<AtomicBool>,
     active: Arc<AtomicBool>,
@@ -140,7 +153,7 @@ fn health_loop(
         if !active.load(Ordering::SeqCst) || winservice::should_stop() {
             return;
         }
-        match check_reachable(CANARY) {
+        match check_reachable(&canary) {
             Reachable::Yes => fails = 0,
             Reachable::Blocked(_) => {
                 fails += 1;
@@ -156,14 +169,16 @@ fn health_loop(
     }
 }
 
-/// Re-measure on the (now clean) line and save a new strategy if one is found.
-fn remeasure_and_save(api: &Arc<WinDivertApi>, cfg: &Config) {
+/// Re-measure on the (now clean) line and save a new strategy if one is found,
+/// keeping the same canary so the monitor keeps watching this line's blocked site.
+fn remeasure_and_save(api: &Arc<WinDivertApi>, cfg: &Config, canary: &str) {
     let opts = ProbeOptions::default();
-    let report = mole_probe::run(CANARY, api.clone(), &opts);
+    let report = mole_probe::run(canary, api.clone(), &opts);
     if let Some(winner) = report.winner {
         if winner != cfg.strategy {
             let _ = Config::new(&winner, &cfg.resolver)
                 .quic(cfg.block_quic)
+                .canary(canary)
                 .save();
         }
     }

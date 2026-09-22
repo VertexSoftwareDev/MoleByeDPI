@@ -546,11 +546,15 @@ fn cmd_apply(args: &[String]) -> i32 {
 
     // Decide which strategy to apply, and remember it so a later bare `apply`
     // (or the service) reuses it.
-    let (strategy, label) = match pick_strategy(&api, auto, &hosts, label, "apply") {
+    let (strategy, label, canary) = match pick_strategy(&api, auto, &hosts, label, "apply") {
         Some(pair) => pair,
         None => return 1,
     };
-    if let Err(e) = Config::new(&label, "Cloudflare").quic(block_quic).save() {
+    if let Err(e) = Config::new(&label, "Cloudflare")
+        .quic(block_quic)
+        .canary(&canary)
+        .save()
+    {
         eprintln!("  (could not save choice: {e})");
     }
 
@@ -558,32 +562,39 @@ fn cmd_apply(args: &[String]) -> i32 {
 }
 
 /// Resolve the strategy for an `apply`/`install`: `--auto` probes for a winner, a
-/// label is parsed, and neither reuses the saved config. Returns the strategy and
-/// its label, or prints why it couldn't and returns None.
+/// label is parsed, and neither reuses the saved config. Returns the strategy, its
+/// label, and the blocked site it was found on (the health-monitor canary; empty
+/// for an explicitly named strategy), or prints why it couldn't and returns None.
 fn pick_strategy(
     api: &Arc<WinDivertApi>,
     auto: bool,
     hosts: &[String],
     label: Option<String>,
     cmd: &str,
-) -> Option<(Strategy, String)> {
+) -> Option<(Strategy, String, String)> {
     if auto {
         return choose_by_probe(api, hosts, cmd);
     }
     if let Some(l) = label {
         return match Strategy::from_label(&l) {
-            Some(s) => Some((s, l)),
+            Some(s) => Some((s, l, String::new())),
             None => {
                 eprintln!("mole {cmd}: '{l}' is not a known strategy (e.g. split:sni, fakesplit:ttl6:sni).");
                 None
             }
         };
     }
-    match Config::load().and_then(|c| Strategy::from_label(&c.strategy).map(|s| (s, c.strategy))) {
-        Some((s, l)) => {
-            println!("Using saved strategy: {l}");
-            Some((s, l))
-        }
+    match Config::load() {
+        Some(c) => match Strategy::from_label(&c.strategy) {
+            Some(s) => {
+                println!("Using saved strategy: {}", c.strategy);
+                Some((s, c.strategy, c.canary))
+            }
+            None => {
+                eprintln!("mole {cmd}: saved strategy is unreadable; run `mole {cmd} --auto`.");
+                None
+            }
+        },
         None => {
             eprintln!("mole {cmd}: no strategy given and none saved. Try `mole {cmd} --auto`.");
             None
@@ -591,12 +602,13 @@ fn pick_strategy(
     }
 }
 
-/// Probe the targets and pick the first strategy that works anywhere.
+/// Probe the targets and pick the first strategy that works anywhere, returning
+/// the winning site too so the service can watch exactly it.
 fn choose_by_probe(
     api: &Arc<WinDivertApi>,
     hosts: &[String],
     cmd: &str,
-) -> Option<(Strategy, String)> {
+) -> Option<(Strategy, String, String)> {
     let opts = ProbeOptions::default();
     let targets: Vec<String> = if hosts.is_empty() {
         DEFAULT_TARGETS.iter().map(|s| s.to_string()).collect()
@@ -608,7 +620,7 @@ fn choose_by_probe(
         let report = mole_probe::run(host, api.clone(), &opts);
         if let Some(winner) = &report.winner {
             println!("  {host}: '{winner}' works.");
-            return Strategy::from_label(winner).map(|s| (s, winner.clone()));
+            return Strategy::from_label(winner).map(|s| (s, winner.clone(), host.clone()));
         }
         println!(
             "  {host}: no strategy got through ({}).",
@@ -731,11 +743,13 @@ fn cmd_install(args: &[String]) -> i32 {
         return 1;
     }
 
-    let (_strategy, label) = match pick_strategy(&api, auto, &hosts, label, "install") {
+    let (_strategy, label, canary) = match pick_strategy(&api, auto, &hosts, label, "install") {
         Some(pair) => pair,
         None => return 1,
     };
-    let cfg = Config::new(&label, "Cloudflare").quic(block_quic);
+    let cfg = Config::new(&label, "Cloudflare")
+        .quic(block_quic)
+        .canary(&canary);
     if let Err(e) = cfg.save() {
         eprintln!("mole install: could not save config: {e}");
         return 1;
