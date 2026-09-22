@@ -149,12 +149,16 @@ impl WinDivertApi {
 
     /// Load from the first directory that has the DLL: `MOLE_WINDIVERT_DIR`, the
     /// executable's own directory, then a `vendor/windivert/x64` checkout for
-    /// development.
+    /// development. If none has it, extract the copy baked into the binary and
+    /// load that — so a bare `mole.exe` still works.
     pub fn load() -> Result<WinDivertApi, LoadError> {
         for dir in candidate_dirs() {
             if dir.join("WinDivert.dll").exists() {
                 return Self::load_from(&dir);
             }
+        }
+        if let Some(dir) = crate::embedded::ensure_extracted() {
+            return Self::load_from(&dir);
         }
         Err(LoadError::DllNotFound)
     }

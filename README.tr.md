@@ -40,6 +40,11 @@ Yönetici hakkı gerekir (WinDivert bir çekirdek sürücüsü yükler).
 her adımı pencerede gösterir — hattını ölçer, çalışan ayarı seçer, servisi kurar.
 Kaldırmak için **`uninstall.cmd`**.
 
+**Arkadaşına gönderirken:** `mole.exe` WinDivert'i içinde taşır ve ilk çalıştırmada
+sürücüyü kendi yanına çıkarır; yani çalışması için en küçük set sadece **`mole.exe`,
+`install.cmd` ve `uninstall.cmd`** — pencere de istersen +`mole-gui.exe`. (Klasörü
+komple zip'leyip atmak da her zaman olur.)
+
 Ya da terminalden:
 
 ```

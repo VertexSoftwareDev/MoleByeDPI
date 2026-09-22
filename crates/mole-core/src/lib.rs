@@ -12,6 +12,7 @@
 pub mod admin;
 pub mod checksum;
 pub mod config;
+pub mod embedded;
 pub mod engine;
 pub mod ffi;
 pub mod packet;

@@ -79,6 +79,11 @@ The friendly way: double-click **`install.cmd`** (it asks for administrator, the
 shows every step in the window — measures the line, picks the strategy, installs
 the service). **`uninstall.cmd`** removes it the same way.
 
+**Sharing it:** `mole.exe` carries WinDivert inside it and writes the driver out
+on first use, so the smallest set that works is just **`mole.exe`, `install.cmd`
+and `uninstall.cmd`** — add `mole-gui.exe` for the window. (Zipping the whole
+folder is always fine.)
+
 Or from a terminal:
 
 ```
