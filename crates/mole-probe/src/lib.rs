@@ -141,7 +141,9 @@ impl Default for ProbeOptions {
         ProbeOptions {
             resolver: Resolver::cloudflare(),
             strategies: Strategy::probe_battery(),
-            timeout: Duration::from_secs(4),
+            // A completed handshake to a CDN takes ~200 ms; 2 s is a wide margin
+            // while keeping a dropped (silent) strategy from stalling the run.
+            timeout: Duration::from_secs(2),
             stop_on_first: true,
         }
     }
@@ -187,28 +189,51 @@ pub fn run(host: &str, api: Arc<WinDivertApi>, opts: &ProbeOptions) -> ProbeRepo
         _ => {}
     }
 
-    // 3. Try each strategy.
-    for strat in &opts.strategies {
-        let start = Instant::now();
-        let (reach, detail) = attempt(&api, ip, host, strat, opts.timeout);
-        let passed = reach == Reach::TlsReply;
-        report.results.push(StrategyResult {
-            strategy: strat.label(),
-            passed,
-            detail,
-            elapsed_ms: start.elapsed().as_millis(),
-        });
-        if passed {
-            // Keep the first (cheapest, listed-earliest) winner even when we go on
-            // to measure the rest for the map — a TTL-independent fake beats a
-            // guessed TTL that only happens to match this hop today.
-            if report.winner.is_none() {
-                report.winner = Some(strat.label());
+    // 3. Try the strategies several at a time. Each attempt binds its own local
+    //    port and scopes its filter to it, so a chunk of concurrent attempts don't
+    //    disturb each other and the chunk costs about one handshake, not the sum.
+    const CHUNK: usize = 8;
+    'chunks: for chunk in opts.strategies.chunks(CHUNK) {
+        let workers: Vec<_> = chunk
+            .iter()
+            .map(|strat| {
+                let api = api.clone();
+                let host = host.to_string();
+                let strat = strat.clone();
+                let timeout = opts.timeout;
+                std::thread::spawn(move || {
+                    let start = Instant::now();
+                    let (reach, detail) = attempt(&api, ip, &host, &strat, timeout);
+                    (
+                        strat.label(),
+                        reach == Reach::TlsReply,
+                        detail,
+                        start.elapsed().as_millis(),
+                    )
+                })
+            })
+            .collect();
+
+        // Join in spawn order, which is battery order — so the first pass we see is
+        // the earliest-listed winner (a TTL-independent fake over a guessed TTL).
+        for w in workers {
+            let Ok((label, passed, detail, ms)) = w.join() else {
+                continue;
+            };
+            if passed && report.winner.is_none() {
+                report.winner = Some(label.clone());
+                report.verdict = Verdict::BypassFound;
             }
-            report.verdict = Verdict::BypassFound;
-            if opts.stop_on_first {
-                break;
-            }
+            report.results.push(StrategyResult {
+                strategy: label,
+                passed,
+                detail,
+                elapsed_ms: ms,
+            });
+        }
+
+        if report.winner.is_some() && opts.stop_on_first {
+            break 'chunks;
         }
     }
 
@@ -276,7 +301,9 @@ fn dns_failed(
     }
 }
 
-/// Attempt one handshake under `strategy`, returning how far it got and why.
+/// Attempt one handshake under `strategy`, returning how far it got and why. The
+/// connection is bound to its own local port and the WinDivert filter is scoped to
+/// that port, so several attempts can run at once without disturbing each other.
 fn attempt(
     api: &Arc<WinDivertApi>,
     ip: Ipv4Addr,
@@ -284,30 +311,37 @@ fn attempt(
     strategy: &Strategy,
     timeout: Duration,
 ) -> (Reach, String) {
-    // Passthrough needs no filter — measure the raw line.
+    // Open the connection first so we know its source port.
+    let Some((sock, port)) = open_socket(ip, timeout) else {
+        return (
+            Reach::TcpFailed,
+            "could not open TCP to the address — an IP-level block or the host is down".into(),
+        );
+    };
+
+    // Passthrough needs no filter — measure the raw line. Otherwise divert only
+    // this flow, keyed on its source port.
     let filter_handle = if *strategy == Strategy::Passthrough {
         None
     } else {
-        let filter = format!("outbound and tcp.DstPort == 443 and ip.DstAddr == {ip}");
+        let filter = format!(
+            "outbound and tcp.DstPort == 443 and ip.DstAddr == {ip} and tcp.SrcPort == {port}"
+        );
         match WinDivert::open(api.clone(), &filter, Mode::Divert, 1000) {
             Ok(h) => Some(Arc::new(h)),
             Err(e) => return (Reach::TcpFailed, format!("could not open filter: {e}")),
         }
     };
 
-    // Run the strategy on this connection's ClientHello in a worker.
+    // Run the strategy on this connection's ClientHello in a worker. The handle
+    // captures from the moment it opens; the ClientHello is a full RTT away.
     let worker = filter_handle.as_ref().map(|h| {
         let h = h.clone();
         let s = strategy.clone();
         std::thread::spawn(move || run_filter(h, s))
     });
 
-    // Give the filter a moment to be blocked in recv before we send.
-    if filter_handle.is_some() {
-        std::thread::sleep(Duration::from_millis(60));
-    }
-
-    let outcome = tls_probe(ip, host, timeout);
+    let outcome = handshake(sock, host, timeout);
 
     // Tear the filter down: shutdown unblocks recv, the worker returns.
     if let Some(h) = &filter_handle {
@@ -405,6 +439,28 @@ fn run_filter(handle: Arc<WinDivert>, strategy: Strategy) {
 /// bypass, so that is what we require. The cert is accepted without checking,
 /// because we connect by IP and only care that the bytes flowed end to end.
 fn tls_probe(ip: Ipv4Addr, host: &str, timeout: Duration) -> Reach {
+    match open_socket(ip, timeout) {
+        Some((sock, _port)) => handshake(sock, host, timeout),
+        None => Reach::TcpFailed,
+    }
+}
+
+/// Open a TCP connection to `ip:443` and return it with its OS-assigned local
+/// port, so a caller can build a per-port WinDivert filter around this exact flow.
+/// The TCP handshake finishes here; the ClientHello (which the filter reshapes) is
+/// only written later, after the caller has opened the handle. `TCP_NODELAY` keeps
+/// that ClientHello in one segment for the filter to see whole.
+fn open_socket(ip: Ipv4Addr, timeout: Duration) -> Option<(TcpStream, u16)> {
+    let addr = SocketAddr::new(IpAddr::V4(ip), 443);
+    let sock = TcpStream::connect_timeout(&addr, timeout).ok()?;
+    sock.set_nodelay(true).ok();
+    let port = sock.local_addr().ok()?.port();
+    Some((sock, port))
+}
+
+/// Drive the TLS handshake on an already-connected socket and classify how far it
+/// got. A completed handshake is the only real pass (see `tls_probe` above).
+fn handshake(mut sock: TcpStream, host: &str, timeout: Duration) -> Reach {
     let config = match dangerous_config() {
         Some(c) => c,
         None => return Reach::TcpFailed,
@@ -413,16 +469,10 @@ fn tls_probe(ip: Ipv4Addr, host: &str, timeout: Duration) -> Reach {
         Ok(n) => n,
         Err(_) => return Reach::TcpFailed,
     };
-    let mut conn = match rustls::ClientConnection::new(Arc::new(config), name) {
+    let mut conn = match rustls::ClientConnection::new(config, name) {
         Ok(c) => c,
         Err(_) => return Reach::TcpFailed,
     };
-    let addr = SocketAddr::new(IpAddr::V4(ip), 443);
-    let mut sock = match TcpStream::connect_timeout(&addr, timeout) {
-        Ok(s) => s,
-        Err(_) => return Reach::TcpFailed,
-    };
-    sock.set_nodelay(true).ok(); // one segment, so the filter sees the whole hello
     sock.set_read_timeout(Some(timeout)).ok();
     sock.set_write_timeout(Some(timeout)).ok();
 
@@ -459,14 +509,21 @@ fn tls_probe(ip: Ipv4Addr, host: &str, timeout: Duration) -> Reach {
 
 /// A rustls client config that accepts any certificate. We reach servers by IP
 /// with the real SNI and only measure whether the handshake completes, so cert
-/// identity is irrelevant here — never use this config for real traffic.
-fn dangerous_config() -> Option<rustls::ClientConfig> {
+/// identity is irrelevant here — never use this config for real traffic. Built
+/// once and shared, so a many-strategy probe doesn't rebuild it each attempt.
+fn dangerous_config() -> Option<Arc<rustls::ClientConfig>> {
+    static CONFIG: std::sync::OnceLock<Arc<rustls::ClientConfig>> = std::sync::OnceLock::new();
+    if let Some(c) = CONFIG.get() {
+        return Some(c.clone());
+    }
     let _ = rustls::crypto::ring::default_provider().install_default();
     let config = rustls::ClientConfig::builder()
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(danger::AcceptAny))
         .with_no_client_auth();
-    Some(config)
+    let arc = Arc::new(config);
+    let _ = CONFIG.set(arc.clone());
+    Some(arc)
 }
 
 /// A certificate verifier that accepts everything — only for the probe, whose job
