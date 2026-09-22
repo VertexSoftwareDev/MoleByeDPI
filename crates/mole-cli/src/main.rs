@@ -826,11 +826,21 @@ fn cmd_status() -> i32 {
             println!("Strategy: {}", c.strategy);
             println!("Resolver: {}", c.resolver);
             println!("Block QUIC: {}", if c.block_quic { "yes" } else { "no" });
+            if !c.canary.trim().is_empty() {
+                println!("Watching: {}", c.canary);
+            }
         }
         None => println!("Strategy: none saved"),
     }
     if let Some(svc) = conflicting_dpi_service() {
         println!("Note: '{svc}' is also running — it will fight Mole; keep only one.");
+    }
+    let recent = mole_core::servicelog::tail(5);
+    if !recent.is_empty() {
+        println!("\nRecent service log:");
+        for line in recent {
+            println!("  {line}");
+        }
     }
     0
 }

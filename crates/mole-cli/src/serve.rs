@@ -10,7 +10,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use mole_core::{winservice, Config, FilterEngine, QuicBlocker, Strategy, WinDivertApi};
+use mole_core::{
+    servicelog, winservice, Config, FilterEngine, QuicBlocker, Strategy, WinDivertApi,
+};
 use mole_probe::{check_reachable, ProbeOptions, Reachable};
 
 /// Fallback canary if the config doesn't name the site the winner was found on.
@@ -77,12 +79,26 @@ fn run_once() -> Outcome {
     };
     let api = match WinDivertApi::load() {
         Ok(a) => Arc::new(a),
-        Err(_) => return Outcome::Failed,
+        Err(e) => {
+            servicelog::log(&format!("could not load WinDivert: {e}"));
+            return Outcome::Failed;
+        }
     };
     let engine = match FilterEngine::start(api.clone(), strategy) {
         Ok(e) => Arc::new(e),
-        Err(_) => return Outcome::Failed, // often an AV shield; the SCM will retry
+        Err(e) => {
+            // Usually an antivirus network shield blocking the driver.
+            servicelog::log(&format!(
+                "could not start the filter engine: {e} — an antivirus shield may be blocking WinDivert (you are unprotected)"
+            ));
+            return Outcome::Failed;
+        }
     };
+    servicelog::log(&format!(
+        "protecting with '{}' (watching {})",
+        cfg.strategy,
+        canary_for(&cfg)
+    ));
     let quic = if cfg.block_quic {
         QuicBlocker::start(api.clone()).ok()
     } else {
@@ -172,14 +188,23 @@ fn health_loop(
 /// Re-measure on the (now clean) line and save a new strategy if one is found,
 /// keeping the same canary so the monitor keeps watching this line's blocked site.
 fn remeasure_and_save(api: &Arc<WinDivertApi>, cfg: &Config, canary: &str) {
+    servicelog::log(&format!(
+        "'{}' stopped working on {canary}; re-measuring",
+        cfg.strategy
+    ));
     let opts = ProbeOptions::default();
     let report = mole_probe::run(canary, api.clone(), &opts);
-    if let Some(winner) = report.winner {
-        if winner != cfg.strategy {
+    match report.winner {
+        Some(winner) if winner != cfg.strategy => {
             let _ = Config::new(&winner, &cfg.resolver)
                 .quic(cfg.block_quic)
                 .canary(canary)
                 .save();
+            servicelog::log(&format!("switched to '{winner}'"));
+        }
+        Some(_) => servicelog::log("re-measured; the same strategy still wins"),
+        None => {
+            servicelog::log("re-measured; no strategy got through (line may need a new technique)")
         }
     }
 }

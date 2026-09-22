@@ -17,6 +17,7 @@ pub mod engine;
 pub mod ffi;
 pub mod packet;
 pub mod service;
+pub mod servicelog;
 pub mod strategy;
 pub mod windivert;
 pub mod winservice;
