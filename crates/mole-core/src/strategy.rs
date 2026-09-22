@@ -78,6 +78,15 @@ pub enum Strategy {
         decoy: Decoy,
         cut: Cut,
     },
+    /// Split the ClientHello into three+ segments (a 1-byte lead and a cut through
+    /// the SNI) — zapret's multisplit, for filters that reassemble a two-way split.
+    MultiSplit,
+    /// Multisplit with the segments sent last-first.
+    MultiDisorder,
+    /// A decoy, then a multisplit real ClientHello.
+    FakeMultiSplit {
+        decoy: Decoy,
+    },
 }
 
 /// TTL values the sweep tries, low first. A home line's DPI usually sits a few
@@ -99,6 +108,9 @@ impl Strategy {
             Strategy::FakeDisorder { decoy, cut } => {
                 format!("fakedisorder:{}:{}", decoy_label(decoy), cut_label(cut))
             }
+            Strategy::MultiSplit => "multisplit".into(),
+            Strategy::MultiDisorder => "multidisorder".into(),
+            Strategy::FakeMultiSplit { decoy } => format!("fakemultisplit:{}", decoy_label(decoy)),
         }
     }
 
@@ -125,6 +137,11 @@ impl Strategy {
                 decoy: parse_decoy(parts.next()?)?,
                 cut: parse_cut(parts.next()?)?,
             }),
+            "multisplit" => Some(Strategy::MultiSplit),
+            "multidisorder" => Some(Strategy::MultiDisorder),
+            "fakemultisplit" => Some(Strategy::FakeMultiSplit {
+                decoy: parse_decoy(parts.next()?)?,
+            }),
             _ => None,
         }
     }
@@ -138,6 +155,8 @@ impl Strategy {
             Strategy::Split { cut: Cut::Sni },
             Strategy::Split { cut: Cut::Fixed(2) },
             Strategy::Disorder { cut: Cut::Sni },
+            Strategy::MultiSplit,
+            Strategy::MultiDisorder,
             Strategy::Fake {
                 decoy: Decoy::WrongSeq(10_000),
             },
@@ -163,6 +182,15 @@ impl Strategy {
             b.push(Strategy::FakeSplit {
                 decoy: Decoy::LowTtl(*ttl),
                 cut: Cut::Sni,
+            });
+        }
+        // Fake + multisplit: a benign decoy plus the real hello in three pieces.
+        b.push(Strategy::FakeMultiSplit {
+            decoy: Decoy::BadChecksum,
+        });
+        for ttl in [3u8, 5, 7] {
+            b.push(Strategy::FakeMultiSplit {
+                decoy: Decoy::LowTtl(ttl),
             });
         }
         // A few fake+disorder combinations for filters that reassemble by arrival
@@ -210,6 +238,23 @@ impl Strategy {
                     out.push(d);
                 }
                 out.extend(split(orig, view, *cut, true));
+                out
+            }
+            Strategy::MultiSplit => {
+                let offs = multisplit_offsets(view.payload(&orig.data));
+                split_at(orig, view, &offs, false)
+            }
+            Strategy::MultiDisorder => {
+                let offs = multisplit_offsets(view.payload(&orig.data));
+                split_at(orig, view, &offs, true)
+            }
+            Strategy::FakeMultiSplit { decoy } => {
+                let mut out = Vec::new();
+                if let Some(d) = make_decoy(orig, view, *decoy) {
+                    out.push(d);
+                }
+                let offs = multisplit_offsets(view.payload(&orig.data));
+                out.extend(split_at(orig, view, &offs, false));
                 out
             }
         }
@@ -286,32 +331,63 @@ fn split(orig: &Packet, view: &TcpView, cut: Cut, disorder: bool) -> Vec<Emit> {
     let Some(off) = cut_offset(payload, cut) else {
         return vec![pass(orig)];
     };
-    let seq = read_seq(&orig.data, view.tcp_offset);
+    split_at(orig, view, &[off], disorder)
+}
 
-    let first = build_segment(&orig.data, view, &payload[..off], seq, orig.addr);
-    let second = build_segment(
-        &orig.data,
-        view,
-        &payload[off..],
-        seq.wrapping_add(off as u32),
-        orig.addr,
-    );
-
-    let (a, b) = (
-        Emit {
-            packet: first,
-            fix_checksums: true,
-        },
-        Emit {
-            packet: second,
-            fix_checksums: true,
-        },
-    );
-    if disorder {
-        vec![b, a]
-    } else {
-        vec![a, b]
+/// The cut points for a multisplit: a 1-byte lead segment and a cut through the
+/// middle of the SNI. Three segments (or more) defeat filters that reassemble a
+/// simple two-way split but give up on more pieces — zapret's `multisplit`.
+fn multisplit_offsets(payload: &[u8]) -> Vec<usize> {
+    let mut offs = vec![1usize];
+    match find_sni(payload) {
+        Some((host, off)) => offs.push(off + host.len() / 2),
+        None => offs.push(3),
     }
+    offs
+}
+
+/// Split the ClientHello into segments at each of `offsets` (deduped and kept
+/// strictly inside the payload). With `disorder`, the segments are sent last
+/// first. Falls back to the whole packet if no offset is usable.
+fn split_at(orig: &Packet, view: &TcpView, offsets: &[usize], disorder: bool) -> Vec<Emit> {
+    let payload = view.payload(&orig.data);
+    let mut cuts: Vec<usize> = offsets
+        .iter()
+        .copied()
+        .filter(|&o| o > 0 && o < payload.len())
+        .collect();
+    cuts.sort_unstable();
+    cuts.dedup();
+    if cuts.is_empty() {
+        return vec![pass(orig)];
+    }
+
+    let base_seq = read_seq(&orig.data, view.tcp_offset);
+    let mut bounds = vec![0usize];
+    bounds.extend_from_slice(&cuts);
+    bounds.push(payload.len());
+
+    let mut emits: Vec<Emit> = bounds
+        .windows(2)
+        .map(|w| {
+            let (s, e) = (w[0], w[1]);
+            let seg = build_segment(
+                &orig.data,
+                view,
+                &payload[s..e],
+                base_seq.wrapping_add(s as u32),
+                orig.addr,
+            );
+            Emit {
+                packet: seg,
+                fix_checksums: true,
+            }
+        })
+        .collect();
+    if disorder {
+        emits.reverse();
+    }
+    emits
 }
 
 /// Build one TCP segment: the original IP+TCP headers (up to the payload) followed
@@ -604,6 +680,88 @@ mod tests {
         // IP total length updated on each.
         assert_eq!(u16::from_be_bytes([a[2], a[3]]), 44);
         assert_eq!(u16::from_be_bytes([b[2], b[3]]), 46);
+    }
+
+    #[test]
+    fn multisplit_makes_three_segments_that_rebuild() {
+        // A ClientHello for a host, so multisplit cuts at 1 and mid-SNI → 3 pieces.
+        let real = build_client_hello("blocked.example");
+        let ihl = 20;
+        let mut data = vec![0u8; ihl + 20 + real.len()];
+        data[0] = 0x45;
+        data[9] = 6;
+        data[16..20].copy_from_slice(&[10, 0, 0, 1]);
+        let total = data.len() as u16;
+        data[2..4].copy_from_slice(&total.to_be_bytes());
+        data[ihl + 2..ihl + 4].copy_from_slice(&443u16.to_be_bytes());
+        data[ihl + 4..ihl + 8].copy_from_slice(&5000u32.to_be_bytes());
+        data[ihl + 12] = 0x50;
+        data[ihl + 20..].copy_from_slice(&real);
+        let view = TcpView::parse(&data).unwrap();
+        let pkt = Packet {
+            data,
+            addr: WinDivertAddress::zeroed(),
+        };
+
+        let out = Strategy::MultiSplit.apply(&pkt, &view);
+        assert_eq!(out.len(), 3, "1-byte lead + SNI-straddle = three segments");
+        // First segment is the 1-byte lead at the base sequence.
+        assert_eq!(out[0].packet.data[40..].len(), 1);
+        assert_eq!(
+            u32::from_be_bytes([
+                out[0].packet.data[24],
+                out[0].packet.data[25],
+                out[0].packet.data[26],
+                out[0].packet.data[27]
+            ]),
+            5000
+        );
+        // The three payloads concatenate back to the original ClientHello.
+        let mut rebuilt = Vec::new();
+        for e in &out {
+            rebuilt.extend_from_slice(&e.packet.data[40..]);
+        }
+        assert_eq!(rebuilt, real);
+        // Each segment's sequence follows the previous segment's length.
+        let seq = |e: &Emit| {
+            u32::from_be_bytes([
+                e.packet.data[24],
+                e.packet.data[25],
+                e.packet.data[26],
+                e.packet.data[27],
+            ])
+        };
+        assert_eq!(seq(&out[1]), 5000 + out[0].packet.data[40..].len() as u32);
+        assert_eq!(
+            seq(&out[2]),
+            seq(&out[1]) + out[1].packet.data[40..].len() as u32
+        );
+    }
+
+    #[test]
+    fn multidisorder_reverses_the_pieces() {
+        let real = build_client_hello("blocked.example");
+        let ihl = 20;
+        let mut data = vec![0u8; ihl + 20 + real.len()];
+        data[0] = 0x45;
+        data[9] = 6;
+        let total = data.len() as u16;
+        data[2..4].copy_from_slice(&total.to_be_bytes());
+        data[ihl + 12] = 0x50;
+        data[ihl + 20..].copy_from_slice(&real);
+        let view = TcpView::parse(&data).unwrap();
+        let pkt = Packet {
+            data,
+            addr: WinDivertAddress::zeroed(),
+        };
+        let ordered = Strategy::MultiSplit.apply(&pkt, &view);
+        let reversed = Strategy::MultiDisorder.apply(&pkt, &view);
+        assert_eq!(reversed.len(), ordered.len());
+        // Last piece of the ordered split is the first sent in disorder.
+        assert_eq!(
+            &reversed[0].packet.data[40..],
+            &ordered[ordered.len() - 1].packet.data[40..]
+        );
     }
 
     #[test]
