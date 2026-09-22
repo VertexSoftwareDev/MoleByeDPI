@@ -27,20 +27,21 @@ fn write_pair(dir: &Path) -> io::Result<()> {
 }
 
 /// Ensure the driver pair exists somewhere loadable and return that directory.
-/// Prefers the executable's own folder; falls back to `%ProgramData%\Mole` when
-/// that folder isn't writable (e.g. under Program Files without a chance to write).
+/// Prefers `%ProgramData%\Mole` (a runtime data folder, alongside the config and
+/// log) so the distributed folder stays clean — just the exe and the .cmd helpers.
+/// Falls back to the executable's own folder if ProgramData isn't usable.
 pub fn ensure_extracted() -> Option<PathBuf> {
+    if let Ok(pd) = std::env::var("ProgramData") {
+        let dir = PathBuf::from(pd).join("Mole");
+        if write_pair(&dir).is_ok() {
+            return Some(dir);
+        }
+    }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             if write_pair(dir).is_ok() {
                 return Some(dir.to_path_buf());
             }
-        }
-    }
-    if let Ok(pd) = std::env::var("ProgramData") {
-        let dir = PathBuf::from(pd).join("Mole");
-        if write_pair(&dir).is_ok() {
-            return Some(dir);
         }
     }
     None
