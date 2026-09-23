@@ -34,7 +34,8 @@ jobs:
           $lines = $files | ForEach-Object {
             "{0}  {1}" -f (Get-FileHash $_ -Algorithm SHA256).Hash.ToLower(), (Split-Path $_ -Leaf)
           }
-          $lines | Set-Content -Encoding ascii SHA256SUMS.txt
+          # LF line endings, so `sha256sum -c` reads it as-is.
+          [IO.File]::WriteAllText("$PWD/SHA256SUMS.txt", ($lines -join "`n") + "`n")
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
