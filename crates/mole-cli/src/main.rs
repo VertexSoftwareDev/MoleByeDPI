@@ -794,12 +794,13 @@ fn cmd_install(args: &[String]) -> i32 {
         install_error(format!("{e}"));
         return 1;
     }
+    mole_core::deploy::register_uninstall_entry(&exe);
     match winservice::start() {
         Ok(()) => {
             println!(
                 "Service installed and started from {}.\n\
                  It will run at boot and heal itself if it drops. This folder is no longer\n\
-                 needed for it to work.",
+                 needed for it to work; remove Mole later from Settings > Apps.",
                 exe.display()
             );
             0

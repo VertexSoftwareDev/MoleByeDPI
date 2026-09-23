@@ -13,6 +13,13 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_DELAY_UNTIL_REBOOT};
+use windows_sys::Win32::System::Registry::{
+    RegCloseKey, RegCreateKeyExW, RegDeleteTreeW, RegSetValueExW, HKEY, HKEY_LOCAL_MACHINE,
+    KEY_WRITE, REG_DWORD, REG_OPTION_NON_VOLATILE, REG_SZ,
+};
+
+/// Where Windows lists installed programs (Settings › Apps, Control Panel).
+const UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Mole";
 
 /// `%ProgramFiles%\Mole` — the installed service's home.
 pub fn install_dir() -> Option<PathBuf> {
@@ -61,10 +68,93 @@ pub fn deploy_self() -> io::Result<PathBuf> {
     Err(last.unwrap_or_else(|| io::Error::other("could not copy mole.exe")))
 }
 
-/// Remove the installed copy and Mole's runtime files. Best-effort: a file still
-/// in use (the running uninstaller itself, a driver not yet unloaded) is
-/// scheduled for deletion at the next reboot instead.
+/// List Mole in Settings › Apps, with an Uninstall button that runs the installed
+/// copy's `uninstall`. The downloaded folder (and its uninstall.cmd) may be long
+/// gone by then; this is how people expect to remove a program. Best-effort.
+pub fn register_uninstall_entry(exe: &Path) {
+    let quoted = format!("\"{}\"", exe.display());
+    let dir = exe
+        .parent()
+        .map(|d| d.display().to_string())
+        .unwrap_or_default();
+    let size_kb = std::fs::metadata(exe)
+        .map(|m| (m.len() / 1024) as u32)
+        .unwrap_or(0);
+    unsafe {
+        let mut key: HKEY = std::ptr::null_mut();
+        let path = wide_str(UNINSTALL_KEY);
+        if RegCreateKeyExW(
+            HKEY_LOCAL_MACHINE,
+            path.as_ptr(),
+            0,
+            std::ptr::null(),
+            REG_OPTION_NON_VOLATILE,
+            KEY_WRITE,
+            std::ptr::null(),
+            &mut key,
+            std::ptr::null_mut(),
+        ) != 0
+        {
+            return;
+        }
+        set_string(key, "DisplayName", "Mole");
+        set_string(key, "DisplayVersion", env!("CARGO_PKG_VERSION"));
+        set_string(key, "Publisher", "VertexSoftwareDev");
+        set_string(key, "DisplayIcon", &quoted);
+        set_string(key, "InstallLocation", &dir);
+        set_string(key, "UninstallString", &format!("{quoted} uninstall"));
+        set_dword(key, "EstimatedSize", size_kb);
+        set_dword(key, "NoModify", 1);
+        set_dword(key, "NoRepair", 1);
+        RegCloseKey(key);
+    }
+}
+
+/// Remove the Settings › Apps entry. Best-effort.
+pub fn remove_uninstall_entry() {
+    let path = wide_str(UNINSTALL_KEY);
+    unsafe {
+        RegDeleteTreeW(HKEY_LOCAL_MACHINE, path.as_ptr());
+    }
+}
+
+unsafe fn set_string(key: HKEY, name: &str, value: &str) {
+    let name = wide_str(name);
+    let data = wide_str(value);
+    RegSetValueExW(
+        key,
+        name.as_ptr(),
+        0,
+        REG_SZ,
+        data.as_ptr() as *const u8,
+        (data.len() * 2) as u32,
+    );
+}
+
+unsafe fn set_dword(key: HKEY, name: &str, value: u32) {
+    let name = wide_str(name);
+    RegSetValueExW(
+        key,
+        name.as_ptr(),
+        0,
+        REG_DWORD,
+        &value as *const u32 as *const u8,
+        4,
+    );
+}
+
+fn wide_str(s: &str) -> Vec<u16> {
+    std::ffi::OsStr::new(s)
+        .encode_wide()
+        .chain(Some(0))
+        .collect()
+}
+
+/// Remove the installed copy, the Settings › Apps entry and Mole's runtime
+/// files. Best-effort: a file still in use (the running uninstaller itself, a
+/// driver not yet unloaded) is scheduled for deletion at the next reboot instead.
 pub fn remove_deployed() {
+    remove_uninstall_entry();
     if let Some(dir) = install_dir() {
         remove_tree(&dir);
     }

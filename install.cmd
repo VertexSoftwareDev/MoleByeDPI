@@ -43,7 +43,9 @@ if "%RESULT%"=="0" (
   echo   bilgisayar her acildiginda kendiliginden baslayacak.
   echo   Kendini onarir; durursa internetin kesilmez ^(fail-open^).
   echo.
-  echo   Kaldirmak istersen: uninstall.cmd dosyasini calistir.
+  echo   Mole kendini Program Files'a kurdu; bu klasoru silebilirsin.
+  echo   Kaldirmak istersen: Ayarlar ^> Uygulamalar ^> Mole,
+  echo   ya da bu klasordeki uninstall.cmd.
   echo ============================================================
 ) else (
   echo ============================================================

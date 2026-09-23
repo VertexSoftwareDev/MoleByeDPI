@@ -1,4 +1,8 @@
 * text=auto eol=lf
+# cmd.exe misparses batch files with bare LF line endings.
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
 *.sys binary
 *.dll binary
 *.png binary
+*.ico binary
