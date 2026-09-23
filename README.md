@@ -1,148 +1,122 @@
 # Mole
 
-*A Windows tool that gets past access blocks locally, and finds its own setting for your line.*
+A Windows tool that gets past DPI-based site blocks on your own computer, and
+works out by itself which method your connection needs.
 
-Mole's one-sentence goal: **you never pick a `.bat` again.** It measures what works on
-your line, picks the winner, sits quietly as a service, repairs itself when it drops, and
-tells you *why* when it can't get through. It is not a VPN — it does not route your traffic
-through a foreign server; it only confuses the filter. Its first rule is **fail-open**: if
-Mole stops, your internet keeps working.
+[Türkçe](README.tr.md)
 
-See [Mole-Plan.md](../Mole-Plan.md) for the full design and reasoning.
+![Mole's window](docs/img/gui-light-en.png)
 
-![Mole's window, protected](docs/img/gui-light-en.png)
+Tools like GoodbyeDPI and zapret already know the tricks. What they leave to you
+is picking the right one: a folder of `.bat` files, tried one after another,
+until something works — and again whenever your provider changes its filter.
+Mole does that part. It tests your connection, finds the method that gets
+through, runs it as a background service, and re-tests on its own when it stops
+working.
 
-## Status
+It is not a VPN. Your traffic still goes straight to the site; Mole only
+reshapes the first packet of each connection so the filter can't read which
+site you're asking for. If Mole stops for any reason, your connection keeps
+working normally.
 
-Early. Building phase by phase; each phase leaves something that works on its own.
+## Install
 
-| Phase | What it delivers | State |
-|-------|------------------|-------|
-| **0. Foundation** | WinDivert integration, packet capture proof, admin/driver lifecycle | **done** |
-| **1. Probe (CLI)** | Try the strategies, find and report the winner, say *why* | **done** |
-| **2. Filter engine** | Desync strategies as pure, tested transforms; the live system-wide engine and `apply` | **done** (battery to grow) |
-| **3. DNS (DoH)** | Get past DNS hijacking; correct resolution for the probe | **done** |
-| **4. Service** | Self-healing Windows service, AV-conflict detection, `install`/`uninstall`/`status` | **done** |
-| **5. UDP/QUIC** | Opt-in QUIC blocking to force TCP fallback (full desync later) | **first step done** |
-| **6. Diagnostics + report** | "Why it failed" classification, privacy-preserving community report | **done** |
-| **7. Polish** | Status-and-control GUI, bilingual README, release flow | **in progress** |
+1. Download the latest zip from [Releases](../../releases) and unzip it.
+2. Double-click **`install.cmd`** (or open **`mole-gui.exe`** and press
+   *Set up protection*). Windows asks for administrator permission, because
+   Mole uses a network driver.
+3. That's it. Mole measures your connection (a few seconds), installs itself
+   into `C:\Program Files\Mole`, and starts with Windows from then on. You can
+   delete the unzipped folder.
 
-Every phase shares one engine: the probe applies each strategy through the *same*
-`mole-core` code the live filter uses, so what it measures is what production does.
-See [docs/findings.md](docs/findings.md) for what real lines actually did.
+To remove it: **Settings › Apps › Mole › Uninstall**, or `uninstall.cmd`. It
+stops the service, unloads the driver and deletes its files.
 
-> **Live verification pending.** The measurement machinery, DoH, and parsers are
-> tested and proven on this line. The service install/start/stop, `apply`, and the
-> benign-decoy + TTL-sweep re-measurement still need one run in an elevated
-> session — the build was written after admin rights lapsed here.
+To share it with a friend, send the whole zip — or just `mole.exe`,
+`install.cmd` and `uninstall.cmd` (add `mole-gui.exe` for the window). The
+driver is built into `mole.exe`.
 
-## Layout
+## How it works
 
-- `mole-core` — the packet layer: WinDivert wrapper, IPv4/TCP/TLS inspection, the
-  desync strategies, the live filter engine, config, and the Windows service.
-- `mole-dns` — DoH resolver.
-- `mole-probe` — measurement engine and the community report.
-- `mole-cli` — the `mole` command line (`doctor`, `capture`, `dns`, `probe`,
-  `apply`, `install`, `uninstall`, `status`, `report`).
-- `mole-gui` — the status-and-control window (thin front over the CLI).
-- `vendor/windivert` — the signed WinDivert 2.x DLL and driver (LGPL, see its LICENSE).
+1. **Measure.** Mole looks the blocked site up over encrypted DNS (DoH), then
+   opens a real TLS connection to it: once with no help, to confirm the block,
+   and then once per method. A method only counts if the full handshake
+   completes — a server reply followed by a broken connection is a failure, not
+   a win. The first method that works is chosen; the whole run takes 1–2
+   seconds because attempts run in parallel.
+2. **Apply.** A Windows service applies that method to every outgoing TLS
+   handshake on the machine — browsers, games and apps alike. Everything else
+   passes through untouched.
+3. **Watch.** Every few minutes the service checks the site it was measured on.
+   If that site is blocked again, your provider has changed something: the
+   service measures again and switches to whatever works now.
+4. **Explain.** When nothing gets through, Mole says why: a reset right after the
+   site name is seen (a DPI block), an unanswered request, a blocked IP address
+   (which no local tool can get past), or a DNS lookup that fails.
 
-## Build & run
+The methods are the well-known ones, implemented as small, tested packet
+transforms: splitting the ClientHello at the site name (into two or more
+pieces, in order or reversed), and decoy ClientHellos for a harmless site sent
+just ahead of the real one — with a TTL low enough to reach the filter but not
+the server, a wrong sequence number, or a bad checksum — alone or combined with
+a split. IPv4 and IPv6 are both handled.
 
-Requires Rust (MSVC toolchain) and administrator rights (WinDivert loads a kernel driver).
+What the measurements actually showed on a real line is written up in
+[docs/findings.md](docs/findings.md).
 
-```
-cargo build --release -p mole-cli
-```
+## Command line
 
-The runner looks for `WinDivert.dll` / `WinDivert64.sys` beside the executable, then in
-`vendor/windivert/x64`, then wherever `MOLE_WINDIVERT_DIR` points. From an **elevated**
-prompt:
+`mole.exe` does everything the window does, and more. Most commands need an
+administrator prompt.
 
-```
-mole doctor              # check admin, driver, and a live capture
-mole capture             # sniff outbound ClientHellos, show their SNI (traffic untouched)
-mole dns <host>          # resolve over DoH (bypasses DNS hijacking)
-mole test <host>         # is a site reachable right now? (no admin needed)
-mole probe [host ...]    # measure which bypass strategy works on this line
-mole version             # print the version
-```
+| Command | What it does |
+|---|---|
+| `mole install --auto` | Measure, pick the method, install and start the service |
+| `mole uninstall` | Stop and remove everything |
+| `mole status` | Service state, the method in use, recent service log |
+| `mole test <host>` | Is this site blocked right now? (no admin needed) |
+| `mole probe [host …]` | Measure which methods work, and why the others don't |
+| `mole apply --auto` | Measure and apply until Ctrl+C, without installing a service |
+| `mole doctor` | Check administrator rights, the driver, and packet capture |
+| `mole report` | Measure everything and write an anonymous JSON report |
+| `mole dns <host>` | Resolve a name over DoH |
 
-`mole probe` resolves each target over DoH, then attempts a TLS handshake with no
-help (the control) and once per strategy, watching for the server's reply. It
-reports one of: *not blocked*, *bypass found* (naming the winning strategy), *IP
-block* (a local tool can't help), or *DPI block, no bypass yet* — and tells the
-difference by measuring, never guessing. A running GoodByeDPI/zapret/ByeDPI
-service rewrites the same handshakes, so `probe` warns and you should stop it first.
+## When it doesn't work
 
-The friendly way: double-click **`install.cmd`** (it asks for administrator, then
-shows every step in the window — measures the line, picks the strategy, installs
-the service). **`uninstall.cmd`** removes it the same way.
+- **Antivirus.** Network shields (Avast, AVG, Kaspersky, ESET…) can block the
+  WinDivert driver. Mole detects the common ones and says so; add an exception
+  for WinDivert, or pause the shield and run the setup again.
+- **Another DPI tool.** GoodbyeDPI, zapret and Mole change the same packets and
+  break each other. Keep one.
+- **Blocked by address.** If the site's IP address itself is blocked, nothing on
+  your computer can get past it. Mole tells you when that is the case.
+- **QUIC.** Browsers also reach some sites over QUIC (UDP), which Mole doesn't
+  reshape. `mole install --auto --block-quic` blocks QUIC so browsers fall back
+  to TCP, where Mole works.
 
-**Sharing it:** `mole.exe` carries WinDivert inside it and writes the driver out
-on first use, so the smallest set that works is just **`mole.exe`, `install.cmd`
-and `uninstall.cmd`** — add `mole-gui.exe` for the window. (Zipping the whole
-folder is always fine.)
+## Building
 
-Or from a terminal:
-
-```
-mole install --auto      # probe, pick the winner, install the self-healing service
-mole status              # what's running, and the chosen strategy
-mole uninstall           # stop and remove, leaving nothing behind
-```
-
-Or, without a service, hold a strategy for one session:
-
-```
-mole apply --auto [--block-quic]   # probe, apply, and keep applying until Ctrl+C
-```
-
-`mole-gui` is a small window over the same commands: it shows the service state,
-the chosen strategy, and any antivirus or rival tool in the way, with one button
-to measure-and-protect (it asks for administrator through UAC), a live "is this
-site blocked right now?" checker, light/dark and TR/EN, and a system-tray icon
-(closing the window hides it to the tray).
-
-**Self-healing:** the service quietly re-measures if its strategy stops working.
-A health monitor watches a normally-blocked site through the running engine; if it
-goes blocked, the operator has likely changed something, so the service re-probes
-and switches to the new winning strategy on its own — no `.bat`, no reinstall.
-
-`doctor` on this machine, with the driver installed and one HTTPS packet caught:
+Rust (MSVC toolchain) on Windows:
 
 ```
-[ok]   administrator — running elevated
-[ok]   WinDivert.dll — loaded
-[ok]   driver — installed and capturing
-[ok]   packet capture — 104.20.23.154:443  SNI example.com
+cargo build --release
 ```
 
-## Note on running alongside GoodByeDPI
+This produces `target/release/mole.exe` and `mole-gui.exe`. The signed WinDivert
+2.x driver and DLL are in `vendor/windivert` and get embedded into `mole.exe`.
 
-If GoodByeDPI (or any other DPI-bypass tool) is active, it splits ClientHello packets
-before Mole's sniffer sees them, so `capture` will show fragments without a readable SNI.
-Stop the other tool to see clean captures. Mole will manage this coexistence properly in a
-later phase; two tools rewriting the same handshake fight each other.
+| Crate | |
+|---|---|
+| `mole-core` | WinDivert wrapper, packet parsing, the methods, the live filter engine, the Windows service |
+| `mole-dns` | DNS-over-HTTPS client |
+| `mole-probe` | Measurement and the site check |
+| `mole-cli` | The `mole` command and the service body |
+| `mole-gui` | The window and tray icon |
 
-## Known limits
+## License
 
-- **IPv6** is handled by the live filter engine — parsing, the split/decoy
-  strategies (hop limit instead of TTL, IPv6 pseudo-header checksum, no IP header
-  checksum) and the engine all take both families, and it's unit-tested byte for
-  byte. It is *not* live-verified: the maintainer's line has no working IPv6, so
-  there was no v6 traffic to test against. The probe still measures over IPv4 and
-  the engine applies the chosen strategy to v6 handshakes too.
-- **QUIC** is sidestepped, not bypassed: `--block-quic` drops UDP :443 so browsers
-  fall back to TCP. A full QUIC Initial desync is future work.
-- **Bad-checksum decoys are unreliable where the NIC does TCP checksum offload** —
-  the decoy gets repaired on the way out and reaches the server. The probe detects
-  this (`handshake broke`) and prefers a TTL-based fake, so it doesn't affect the
-  chosen strategy; it only narrows the battery on such machines.
-- Not a VPN, not anonymity: Mole confuses the filter, it does not hide traffic. An
-  IP-level block can't be passed locally — Mole says so rather than failing quietly.
+Mole is MIT-licensed. It ships [WinDivert](https://reqrypt.org/windivert.html)
+unmodified, under the LGPL v3 (see `vendor/windivert/LICENSE`).
 
-## Legal
-
-Using a bypass tool and publishing one under your own name are different things. This repo
-starts **private** by choice; revisit when it matures.
+Mole does not hide who you are or what you do online. Whether using it is
+allowed where you live is for you to check.

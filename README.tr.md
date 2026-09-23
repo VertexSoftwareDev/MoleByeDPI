@@ -1,110 +1,122 @@
 # Mole
 
-*Türkiye'de erişim engellerini yerelde aşan, kendi hattına göre ayarını kendi bulan Windows aracı.*
+DPI ile yapılan site engellerini kendi bilgisayarında aşan, bağlantının hangi
+yönteme ihtiyacı olduğunu da kendisi bulan bir Windows aracı.
 
-Mole'un tek cümlelik hedefi: **bir daha `.bat` seçme.** Senin hattında ne
-çalıştığını kendisi ölçer, çalışanı seçer, servis olarak sessizce oturur,
-koptuğunda kendini onarır, aşamadığında da **sebebini** söyler. VPN değildir —
-trafiği yurt dışından geçirmez; sadece filtreyi şaşırtır. En büyük ilkesi
-**fail-open**: Mole dursa bile internetin kesilmez.
+[English](README.md)
 
-Tam tasarım ve gerekçeler için: [Mole-Plan.md](../Mole-Plan.md).
+![Mole penceresi](docs/img/gui-dark-tr.png)
 
-![Mole penceresi, korumada](docs/img/gui-dark-tr.png)
+GoodbyeDPI ve zapret gibi araçlar numaraları zaten biliyor. Sana bıraktıkları
+iş, doğru olanı seçmek: bir klasör dolusu `.bat`, biri tutana kadar sırayla
+denenir, operatör filtresini değiştirince de her şey baştan. Mole bu kısmı
+yapar. Bağlantını test eder, geçen yöntemi bulur, arka planda servis olarak
+çalıştırır, çalışmaz olursa da kendi kendine yeniden test eder.
 
-## Durum
+VPN değildir. Trafiğin yine doğrudan siteye gider; Mole sadece her bağlantının
+ilk paketini, filtre hangi siteyi istediğini okuyamayacak şekilde yeniden
+biçimlendirir. Mole herhangi bir sebeple durursa internetin normal çalışmaya
+devam eder.
 
-Fazların çoğu bitti; her faz tek başına işe yarayan bir şey bırakıyor.
+## Kurulum
 
-| Faz | Ne çıkar | Durum |
-|-----|----------|-------|
-| **0. Temel** | WinDivert entegrasyonu, paket yakalama kanıtı, yönetici/sürücü yaşam döngüsü | **bitti** |
-| **1. Ölçüm (CLI)** | Stratejileri dene, kazananı bul ve *neden*ini söyle | **bitti** |
-| **2. Filtre motoru** | Atlatma stratejileri saf/test edilmiş dönüşümler; canlı sistem-geneli motor ve `apply` | **bitti** (battery büyüyecek) |
-| **3. DNS (DoH)** | DNS kaçırmayı aşma; probe için doğru çözümleme | **bitti** |
-| **4. Servis** | Kendini onaran Windows servisi, AV çakışma tespiti, `install`/`uninstall`/`status` | **bitti** |
-| **5. UDP/QUIC** | Opt-in QUIC engelleme (TCP'ye düşürme); tam desync sonraya | **ilk adım bitti** |
-| **6. Teşhis + rapor** | "Neden çalışmadı" sınıflandırması, gizlilik-korumalı topluluk raporu | **bitti** |
-| **7. Cila** | Durum-kontrol GUI'si, iki dilli README, sürüm akışı | **devam ediyor** |
+1. [Releases](../../releases) sayfasından son zip'i indir ve aç.
+2. **`install.cmd`**'ye çift tıkla (ya da **`mole-gui.exe`**'yi açıp *Korumayı
+   kur*'a bas). Mole bir ağ sürücüsü kullandığı için Windows yönetici izni
+   ister.
+3. Bu kadar. Mole bağlantını ölçer (birkaç saniye), kendini
+   `C:\Program Files\Mole` altına kurar ve bundan sonra Windows ile birlikte
+   başlar. Açtığın klasörü silebilirsin.
 
-> **Canlı doğrulama bekliyor.** Ölçüm makinesi, DoH ve ayrıştırıcılar bu hatta
-> test edilip kanıtlandı. Servis kur/başlat/durdur, `apply`, ve iyi-huylu-sahte +
-> TTL-tarama yeniden ölçümü elevated (yönetici) bir oturumda bir kez çalıştırmayı
-> bekliyor — kod, buradaki yönetici hakkı düştükten sonra yazıldı.
+Kaldırmak için: **Ayarlar › Uygulamalar › Mole › Kaldır**, ya da
+`uninstall.cmd`. Servisi durdurur, sürücüyü kapatır ve dosyalarını siler.
 
-## Kullanım
+Arkadaşına gönderirken zip'in tamamını at — ya da sadece `mole.exe`,
+`install.cmd` ve `uninstall.cmd` (pencere de istersen `mole-gui.exe`). Sürücü
+`mole.exe`'nin içinde.
 
-Yönetici hakkı gerekir (WinDivert bir çekirdek sürücüsü yükler).
+## Nasıl çalışır
 
-**En kolay yol:** **`install.cmd`** dosyasına çift tıkla. Yönetici izni ister, sonra
-her adımı pencerede gösterir — hattını ölçer, çalışan ayarı seçer, servisi kurar.
-Kaldırmak için **`uninstall.cmd`**.
+1. **Ölçer.** Mole engelli siteyi şifreli DNS (DoH) ile çözer, sonra ona gerçek
+   bir TLS bağlantısı açar: önce hiçbir yardım olmadan, engeli doğrulamak için,
+   sonra her yöntemle bir kez. Bir yöntem ancak el sıkışma baştan sona
+   tamamlanırsa sayılır — sunucunun yanıt verip bağlantının ardından kopması
+   başarı değil, başarısızlıktır. Çalışan ilk yöntem seçilir; denemeler paralel
+   yapıldığı için tüm ölçüm 1–2 saniye sürer.
+2. **Uygular.** Bir Windows servisi bu yöntemi makinedeki her giden TLS el
+   sıkışmasına uygular — tarayıcı, oyun, uygulama fark etmez. Geri kalan her şey
+   olduğu gibi geçer.
+3. **İzler.** Servis birkaç dakikada bir, ölçümün yapıldığı siteyi kontrol eder.
+   Site yeniden engellenmişse operatör bir şey değiştirmiştir: servis yeniden
+   ölçer ve o an çalışan yönteme geçer.
+4. **Açıklar.** Hiçbir şey geçmezse Mole sebebini söyler: site adı görüldüğü
+   anda gelen bir sıfırlama (DPI engeli), yanıtsız kalan bir istek, engellenmiş
+   bir IP adresi (bunu hiçbir yerel araç aşamaz) ya da başarısız bir DNS
+   sorgusu.
 
-**Arkadaşına gönderirken:** `mole.exe` WinDivert'i içinde taşır ve ilk çalıştırmada
-sürücüyü kendi yanına çıkarır; yani çalışması için en küçük set sadece **`mole.exe`,
-`install.cmd` ve `uninstall.cmd`** — pencere de istersen +`mole-gui.exe`. (Klasörü
-komple zip'leyip atmak da her zaman olur.)
+Yöntemler bilinen yöntemler; küçük ve test edilmiş paket dönüşümleri olarak
+yazıldı: ClientHello'yu site adının ortasından bölmek (iki ya da daha fazla
+parçaya, sıralı ya da ters sırada), ve gerçeğinden hemen önce zararsız bir site
+için sahte ClientHello göndermek — filtreye ulaşıp sunucuya ulaşmayacak kadar
+düşük TTL ile, yanlış sıra numarasıyla ya da bozuk checksum ile — tek başına ya
+da bölme ile birlikte. IPv4 ve IPv6'nın ikisi de destekleniyor.
 
-Ya da terminalden:
+Ölçümlerin gerçek bir hatta ne gösterdiği [docs/findings.md](docs/findings.md)
+dosyasında.
+
+## Komut satırı
+
+Pencerenin yaptığı her şeyi, fazlasıyla, `mole.exe` yapar. Çoğu komut yönetici
+olarak açılmış bir komut istemi ister.
+
+| Komut | Ne yapar |
+|---|---|
+| `mole install --auto` | Ölç, yöntemi seç, servisi kur ve başlat |
+| `mole uninstall` | Her şeyi durdur ve kaldır |
+| `mole status` | Servisin durumu, kullanılan yöntem, son servis kayıtları |
+| `mole test <site>` | Bu site şu an engelli mi? (yönetici gerekmez) |
+| `mole probe [site …]` | Hangi yöntemlerin çalıştığını, diğerlerinin neden çalışmadığını ölç |
+| `mole apply --auto` | Servis kurmadan ölç ve Ctrl+C'ye kadar uygula |
+| `mole doctor` | Yönetici hakkını, sürücüyü ve paket yakalamayı kontrol et |
+| `mole report` | Her şeyi ölç, anonim bir JSON raporu yaz |
+| `mole dns <site>` | Bir adı DoH ile çöz |
+
+## Çalışmıyorsa
+
+- **Antivirüs.** Ağ kalkanları (Avast, AVG, Kaspersky, ESET…) WinDivert
+  sürücüsünü engelleyebilir. Mole yaygın olanları tanır ve söyler; WinDivert
+  için bir istisna ekle ya da kalkanı durdurup kurulumu tekrar çalıştır.
+- **Başka bir DPI aracı.** GoodbyeDPI, zapret ve Mole aynı paketleri değiştirir
+  ve birbirini bozar. Birini tut.
+- **Adresten engel.** Sitenin IP adresi doğrudan engellenmişse bilgisayarındaki
+  hiçbir şey bunu aşamaz. Durum buysa Mole bunu söyler.
+- **QUIC.** Tarayıcılar bazı sitelere QUIC (UDP) üzerinden de bağlanır; Mole
+  bunu biçimlendirmez. `mole install --auto --block-quic` QUIC'i engeller,
+  tarayıcı Mole'un çalıştığı TCP'ye döner.
+
+## Derleme
+
+Windows'ta Rust (MSVC araç zinciri) ile:
 
 ```
-mole install --auto      # ölç, kazananı seç, kendini onaran servisi kur
-mole status              # ne çalışıyor, hangi strateji seçili
-mole uninstall           # durdur ve kaldır, iz bırakmadan
+cargo build --release
 ```
 
-Servissiz, tek oturumluk:
+Çıktı: `target/release/mole.exe` ve `mole-gui.exe`. İmzalı WinDivert 2.x
+sürücüsü ve DLL'i `vendor/windivert` altında; `mole.exe`'nin içine gömülür.
 
-```
-mole apply --auto [--block-quic]   # ölç, uygula, Ctrl+C'ye kadar sürdür
-```
+| Crate | |
+|---|---|
+| `mole-core` | WinDivert sarmalayıcı, paket ayrıştırma, yöntemler, canlı filtre motoru, Windows servisi |
+| `mole-dns` | DNS-over-HTTPS istemcisi |
+| `mole-probe` | Ölçüm ve site kontrolü |
+| `mole-cli` | `mole` komutu ve servisin gövdesi |
+| `mole-gui` | Pencere ve tepsi ikonu |
 
-Tek komutlar:
+## Lisans
 
-```
-mole doctor              # yönetici, sürücü ve canlı yakalama teşhisi
-mole dns <host>          # DoH ile çöz (DNS kaçırmayı aşar)
-mole test <host>         # bir site şu an erişilebilir mi? (yönetici gerekmez)
-mole probe [host ...]    # bu hatta hangi stratejinin çalıştığını ölç
-mole report              # her şeyi ölç, paylaşılabilir (gizlilik-korumalı) rapor yaz
-mole version             # sürümü yazar
-```
+Mole MIT lisanslıdır. [WinDivert](https://reqrypt.org/windivert.html)'i
+değiştirmeden, LGPL v3 altında içerir (bkz. `vendor/windivert/LICENSE`).
 
-`mole-gui`, aynı komutların üstünde küçük bir penceredir: servis durumunu, seçili
-stratejiyi ve yoldaki antivirüs/rakip aracı gösterir; tek tuşla ölç-ve-koru
-(yönetici iznini UAC ile ister), canlı "bu site şu an engelli mi?" testi, açık/koyu
-ve TR/EN, ve bir sistem tepsisi ikonu (pencereyi kapatınca tepsiye küçülür).
-
-**Kendini onarma:** strateji çalışmayı bırakırsa servis sessizce yeniden ölçer.
-Bir sağlık izleyicisi, çalışan motorun üstünden normalde engelli bir siteyi izler;
-o site engellenirse operatör bir şey değiştirmiş demektir, servis yeniden ölçüp yeni
-çalışan stratejiye kendi geçer — `.bat` yok, yeniden kurulum yok.
-
-## GoodByeDPI ile birlikte çalıştırma
-
-GoodByeDPI (ya da başka bir DPI atlatma aracı) açıksa, ClientHello paketlerini
-Mole'un dinleyicisinden önce parçalar; bu yüzden `capture` okunabilir SNI olmadan
-parçalar gösterir ve `probe`/`apply` uyarır. Temiz sonuç için ötekini durdur. İki
-araç aynı el sıkışmayı yeniden yazınca birbiriyle kavga eder — birini tut.
-
-## Bilinen sınırlar
-
-- **IPv6** canlı filtre motorunda destekleniyor — ayrıştırma, split/decoy
-  stratejileri (TTL yerine hop-limit, IPv6 pseudo-header checksum, IP başlık
-  checksum'ı yok) ve motorun kendisi iki aileyi de işliyor; byte-byte birim
-  testleriyle doğrulandı. **Canlı doğrulanmadı**: geliştiricinin hattında çalışan
-  IPv6 yok, test edecek v6 trafiği yoktu. Probe ölçümü hâlâ IPv4 üzerinden yapar,
-  motor seçilen stratejiyi v6 el sıkışmalarına da uygular.
-- **QUIC aşılmıyor, yan geçiliyor:** `--block-quic` UDP :443'ü düşürür, tarayıcı
-  TCP'ye döner. Tam QUIC desync sonraki iş.
-- **Bozuk-checksum sahteleri, NIC checksum offload olan makinelerde güvenilmez** —
-  decoy yolda düzeltilip sunucuya ulaşır. Probe bunu tespit eder (`handshake broke`)
-  ve TTL tabanlı sahteyi tercih eder; yani seçilen stratejiyi etkilemez, sadece o
-  makinelerde battery'i daraltır.
-- VPN değil, anonimlik aracı değil: Mole filtreyi şaşırtır, trafiği gizlemez. IP
-  seviyesindeki engel yerelde aşılamaz — Mole sessizce başarısız olmak yerine söyler.
-
-## Yasal
-
-Bir aracı kullanmak ile onu kendi adınla yayımlamak farklı şeylerdir. Bu depo
-bilinçli olarak **private** başlıyor; olgunlaşınca yeniden değerlendirilir.
+Mole kim olduğunu ya da internette ne yaptığını gizlemez. Bulunduğun yerde
+kullanımının serbest olup olmadığını kontrol etmek sana kalmış.
