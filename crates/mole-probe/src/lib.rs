@@ -249,11 +249,33 @@ pub enum Reachable {
     /// The handshake completed — the site is open on this line.
     Yes,
     /// TCP opened but the handshake was reset or dropped — a DPI block.
-    Blocked(String),
+    Blocked(Block),
     /// TCP could not be opened — an IP-level block a local tool cannot pass.
     IpBlocked,
     /// The name could not be resolved.
     DnsFailed(String),
+}
+
+/// How a DPI block showed itself. An enum rather than text so each front end can
+/// word it in its own language.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Block {
+    /// The connection was reset right after the ClientHello.
+    Reset,
+    /// The ClientHello went unanswered — dropped on the way.
+    Dropped,
+    /// The server answered but the handshake then broke.
+    Broke,
+}
+
+impl std::fmt::Display for Block {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Block::Reset => "connection reset (DPI)",
+            Block::Dropped => "no reply (dropped)",
+            Block::Broke => "handshake broke",
+        })
+    }
 }
 
 /// Resolve `host` (over any working DoH resolver) and check whether a TLS
@@ -266,9 +288,9 @@ pub fn check_reachable(host: &str) -> Reachable {
     match tls_probe(ip, host, Duration::from_secs(5)) {
         Reach::TlsReply => Reachable::Yes,
         Reach::TcpFailed => Reachable::IpBlocked,
-        Reach::Reset => Reachable::Blocked("connection reset (DPI)".into()),
-        Reach::Silent => Reachable::Blocked("no reply (dropped)".into()),
-        Reach::Broke => Reachable::Blocked("handshake broke".into()),
+        Reach::Reset => Reachable::Blocked(Block::Reset),
+        Reach::Silent => Reachable::Blocked(Block::Dropped),
+        Reach::Broke => Reachable::Blocked(Block::Broke),
     }
 }
 

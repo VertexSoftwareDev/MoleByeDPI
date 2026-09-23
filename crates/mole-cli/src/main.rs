@@ -733,21 +733,21 @@ fn cmd_install(args: &[String]) -> i32 {
         }
     }
     if !is_elevated() {
-        eprintln!("mole install: needs administrator rights.");
+        install_error("needs administrator rights.".to_string());
         return 1;
     }
     let api = match WinDivertApi::load() {
         Ok(api) => Arc::new(api),
         Err(e) => {
-            eprintln!("mole install: {e}");
+            install_error(format!("{e}"));
             return 1;
         }
     };
     if let Some(svc) = conflicting_dpi_service() {
-        eprintln!(
-            "mole install: the '{svc}' service is running and would fight Mole.\n\
+        install_error(format!(
+            "the '{svc}' service is running and would fight Mole.\n\
              Remove or stop it first (`sc stop {svc}`)."
-        );
+        ));
         return 1;
     }
 
@@ -757,20 +757,23 @@ fn cmd_install(args: &[String]) -> i32 {
     if mole_core::winservice::query_state().is_some() {
         println!("Replacing the current Mole service...");
         if let Err(e) = mole_core::winservice::uninstall() {
-            eprintln!("mole install: could not remove the current service: {e}");
+            install_error(format!("could not remove the current service: {e}"));
             return 1;
         }
     }
 
     let (_strategy, label, canary) = match pick_strategy(&api, auto, &hosts, label, "install") {
         Some(pair) => pair,
-        None => return 1,
+        None => {
+            mole_core::servicelog::log("install failed: no working method found on this line");
+            return 1;
+        }
     };
     let cfg = Config::new(&label, "Cloudflare")
         .quic(block_quic)
         .canary(&canary);
     if let Err(e) = cfg.save() {
-        eprintln!("mole install: could not save config: {e}");
+        install_error(format!("could not save config: {e}"));
         return 1;
     }
     println!(
@@ -783,12 +786,12 @@ fn cmd_install(args: &[String]) -> i32 {
     let exe = match mole_core::deploy::deploy_self() {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("mole install: could not place mole.exe in Program Files: {e}");
+            install_error(format!("could not place mole.exe in Program Files: {e}"));
             return 1;
         }
     };
     if let Err(e) = winservice::install(&exe) {
-        eprintln!("mole install: {e}");
+        install_error(format!("{e}"));
         return 1;
     }
     match winservice::start() {
@@ -802,10 +805,17 @@ fn cmd_install(args: &[String]) -> i32 {
             0
         }
         Err(e) => {
-            eprintln!("mole install: installed, but could not start now: {e}");
+            install_error(format!("installed, but could not start now: {e}"));
             1
         }
     }
+}
+
+/// Report an install failure on the console and in the service log, where the
+/// window (which runs `install` hidden) can show it as the last event.
+fn install_error(msg: String) {
+    eprintln!("mole install: {msg}");
+    mole_core::servicelog::log(&format!("install failed: {msg}"));
 }
 
 fn cmd_uninstall() -> i32 {
