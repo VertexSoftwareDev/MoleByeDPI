@@ -756,8 +756,10 @@ fn cmd_install(args: &[String]) -> i32 {
     // and lets the fresh install register — a service can't be created over itself.
     if mole_core::winservice::query_state().is_some() {
         println!("Replacing the current Mole service...");
-        let _ = mole_core::winservice::uninstall();
-        std::thread::sleep(std::time::Duration::from_millis(400));
+        if let Err(e) = mole_core::winservice::uninstall() {
+            eprintln!("mole install: could not remove the current service: {e}");
+            return 1;
+        }
     }
 
     let (_strategy, label, canary) = match pick_strategy(&api, auto, &hosts, label, "install") {
@@ -777,14 +779,25 @@ fn cmd_install(args: &[String]) -> i32 {
     );
 
     use mole_core::winservice;
-    if let Err(e) = winservice::install() {
+    // The service runs from its own copy, so this folder can be moved or deleted.
+    let exe = match mole_core::deploy::deploy_self() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("mole install: could not place mole.exe in Program Files: {e}");
+            return 1;
+        }
+    };
+    if let Err(e) = winservice::install(&exe) {
         eprintln!("mole install: {e}");
         return 1;
     }
     match winservice::start() {
         Ok(()) => {
             println!(
-                "Service installed and started. It will run at boot and heal itself if it drops."
+                "Service installed and started from {}.\n\
+                 It will run at boot and heal itself if it drops. This folder is no longer\n\
+                 needed for it to work.",
+                exe.display()
             );
             0
         }
@@ -803,7 +816,13 @@ fn cmd_uninstall() -> i32 {
     use mole_core::winservice;
     match winservice::uninstall() {
         Ok(()) => {
-            // Leave nothing behind: remove the saved config too.
+            // Leave nothing behind: unload the driver (unless another WinDivert
+            // tool may be using it), then remove the installed copy, config, log
+            // and extracted driver files.
+            if conflicting_dpi_service().is_none() {
+                winservice::stop_windivert_driver();
+            }
+            mole_core::deploy::remove_deployed();
             let _ = std::fs::remove_file(Config::path());
             println!("Service stopped and removed. Nothing left behind; traffic flows normally.");
             0

@@ -126,9 +126,13 @@ fn run_once() -> Outcome {
     engine.run(&local_stop);
 
     // Wind the health thread down and release the engine so the driver handle
-    // closes before any re-measure runs on a clean line.
+    // closes before any re-measure runs on a clean line. On a stop, don't wait
+    // for it: it may be mid-check (DoH + a handshake, seconds), and the process
+    // is about to exit anyway — a stop should be prompt.
     health_active.store(false, Ordering::SeqCst);
-    let _ = health.join();
+    if !winservice::should_stop() {
+        let _ = health.join();
+    }
     winservice::register_stopper(None);
     let want_remeasure = remeasure.load(Ordering::SeqCst);
     drop(stopper);

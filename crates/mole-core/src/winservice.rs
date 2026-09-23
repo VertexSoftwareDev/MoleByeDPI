@@ -11,20 +11,24 @@
 
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
-use windows_sys::Win32::Foundation::{ERROR_SERVICE_DOES_NOT_EXIST, NO_ERROR};
+use windows_sys::Win32::Foundation::{
+    ERROR_SERVICE_DOES_NOT_EXIST, ERROR_SERVICE_MARKED_FOR_DELETE, NO_ERROR,
+};
 use windows_sys::Win32::System::Services::{
     ChangeServiceConfig2W, CloseServiceHandle, ControlService, CreateServiceW, DeleteService,
     OpenSCManagerW, OpenServiceW, QueryServiceStatus, RegisterServiceCtrlHandlerW,
     SetServiceStatus, StartServiceCtrlDispatcherW, StartServiceW, ENUM_SERVICE_TYPE, SC_ACTION,
-    SC_ACTION_RESTART, SC_MANAGER_ALL_ACCESS, SC_MANAGER_CONNECT, SERVICE_ACCEPT_SHUTDOWN,
-    SERVICE_ACCEPT_STOP, SERVICE_ALL_ACCESS, SERVICE_AUTO_START, SERVICE_CONFIG_FAILURE_ACTIONS,
-    SERVICE_CONTROL_SHUTDOWN, SERVICE_CONTROL_STOP, SERVICE_ERROR_NORMAL, SERVICE_FAILURE_ACTIONSW,
-    SERVICE_QUERY_STATUS, SERVICE_RUNNING, SERVICE_START_PENDING, SERVICE_STATUS,
-    SERVICE_STATUS_HANDLE, SERVICE_STOPPED, SERVICE_STOP_PENDING, SERVICE_TABLE_ENTRYW,
-    SERVICE_WIN32_OWN_PROCESS,
+    SC_ACTION_RESTART, SC_HANDLE, SC_MANAGER_ALL_ACCESS, SC_MANAGER_CONNECT,
+    SERVICE_ACCEPT_SHUTDOWN, SERVICE_ACCEPT_STOP, SERVICE_ALL_ACCESS, SERVICE_AUTO_START,
+    SERVICE_CONFIG_FAILURE_ACTIONS, SERVICE_CONTROL_SHUTDOWN, SERVICE_CONTROL_STOP,
+    SERVICE_ERROR_NORMAL, SERVICE_FAILURE_ACTIONSW, SERVICE_QUERY_STATUS, SERVICE_RUNNING,
+    SERVICE_START_PENDING, SERVICE_STATUS, SERVICE_STATUS_HANDLE, SERVICE_STOP, SERVICE_STOPPED,
+    SERVICE_STOP_PENDING, SERVICE_TABLE_ENTRYW, SERVICE_WIN32_OWN_PROCESS,
 };
 
 use crate::windivert::WinDivert;
@@ -48,10 +52,10 @@ fn stopper_slot() -> &'static Mutex<Option<Arc<WinDivert>>> {
 
 // ── Install / uninstall / control ────────────────────────────────────────────
 
-/// Install the service pointing at this executable's `service-run`, set it to
-/// start at boot, and ask Windows to restart it on failure.
-pub fn install() -> Result<(), ServiceError> {
-    let exe = std::env::current_exe().map_err(|_| ServiceError::NoExePath)?;
+/// Install the service pointing at `exe service-run` (the copy
+/// [`crate::deploy::deploy_self`] placed), set it to start at boot, and ask
+/// Windows to restart it on failure.
+pub fn install(exe: &Path) -> Result<(), ServiceError> {
     let bin_path = format!("\"{}\" service-run", exe.display());
 
     unsafe {
@@ -119,7 +123,10 @@ pub fn start() -> Result<(), ServiceError> {
     })
 }
 
-/// Stop and delete the service. Returns Ok if it was already gone.
+/// Stop and delete the service, and wait until it is really gone: stopped (so
+/// its engine no longer shapes traffic and its executable is released) and
+/// removed from the SCM (so a fresh install can be created under the same name).
+/// Returns Ok if it was already gone.
 pub fn uninstall() -> Result<(), ServiceError> {
     unsafe {
         let scm = OpenSCManagerW(std::ptr::null(), std::ptr::null(), SC_MANAGER_ALL_ACCESS);
@@ -135,17 +142,77 @@ pub fn uninstall() -> Result<(), ServiceError> {
             }
             return Err(ServiceError::from_code("OpenService", code));
         }
-        // Best-effort stop, then delete.
         let mut status: SERVICE_STATUS = std::mem::zeroed();
         ControlService(svc, SERVICE_CONTROL_STOP, &mut status);
-        let ok = DeleteService(svc) != 0;
+        wait_for_stopped(svc, Duration::from_secs(20));
+        let deleted = DeleteService(svc) != 0;
+        let code = last_error();
         CloseServiceHandle(svc);
+        // Deletion completes once every handle is closed; ours just was.
+        if deleted {
+            wait_until_gone(scm, SERVICE_NAME, Duration::from_secs(5));
+        }
         CloseServiceHandle(scm);
-        if ok {
+        if deleted || code == ERROR_SERVICE_MARKED_FOR_DELETE {
             Ok(())
         } else {
-            Err(ServiceError::last("DeleteService"))
+            Err(ServiceError::from_code("DeleteService", code))
         }
+    }
+}
+
+/// Ask the WinDivert driver to unload, so an uninstall truly leaves nothing
+/// loaded. WinDivert marks its own service for deletion as soon as it starts it,
+/// so once the driver stops, Windows removes the entry. Skipped by the caller
+/// when another WinDivert-based tool may still be using the driver. Best-effort.
+pub fn stop_windivert_driver() {
+    unsafe {
+        let scm = OpenSCManagerW(std::ptr::null(), std::ptr::null(), SC_MANAGER_CONNECT);
+        if scm.is_null() {
+            return;
+        }
+        let svc = OpenServiceW(
+            scm,
+            wide("WinDivert").as_ptr(),
+            SERVICE_STOP | SERVICE_QUERY_STATUS,
+        );
+        if !svc.is_null() {
+            let mut status: SERVICE_STATUS = std::mem::zeroed();
+            if ControlService(svc, SERVICE_CONTROL_STOP, &mut status) != 0 {
+                wait_for_stopped(svc, Duration::from_secs(5));
+            }
+            CloseServiceHandle(svc);
+        }
+        CloseServiceHandle(scm);
+    }
+}
+
+/// Poll until the service reports STOPPED (or has no state), up to `limit`.
+unsafe fn wait_for_stopped(svc: SC_HANDLE, limit: Duration) {
+    let start = Instant::now();
+    while start.elapsed() < limit {
+        let mut status: SERVICE_STATUS = std::mem::zeroed();
+        if QueryServiceStatus(svc, &mut status) == 0 || status.dwCurrentState == SERVICE_STOPPED {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+/// Poll until the SCM no longer knows the service, up to `limit`.
+unsafe fn wait_until_gone(scm: SC_HANDLE, name: &str, limit: Duration) {
+    let name = wide(name);
+    let start = Instant::now();
+    while start.elapsed() < limit {
+        let svc = OpenServiceW(scm, name.as_ptr(), SERVICE_QUERY_STATUS);
+        if svc.is_null() {
+            if last_error() == ERROR_SERVICE_DOES_NOT_EXIST {
+                return;
+            }
+        } else {
+            CloseServiceHandle(svc);
+        }
+        std::thread::sleep(Duration::from_millis(200));
     }
 }
 
@@ -308,7 +375,6 @@ fn last_error() -> u32 {
 
 #[derive(Debug)]
 pub enum ServiceError {
-    NoExePath,
     Win32 { op: &'static str, code: u32 },
 }
 
@@ -327,7 +393,6 @@ impl ServiceError {
 impl std::fmt::Display for ServiceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ServiceError::NoExePath => write!(f, "could not find this executable's path"),
             ServiceError::Win32 { op, code } => {
                 let hint = match *code {
                     5 => " (access denied — run as administrator)",
