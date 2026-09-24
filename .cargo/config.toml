@@ -1,0 +1,7 @@
+# Statically link the MSVC C runtime so the binaries carry it themselves. Without
+# this, mole.exe / mole-gui.exe depend on VCRUNTIME140.dll from the Visual C++
+# Redistributable, which is NOT installed on a stock Windows — so on a friend's
+# fresh PC the GUI failed to start (silently, being a windows-subsystem app).
+# With +crt-static the exe runs on any Windows 10/11 out of the box.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
