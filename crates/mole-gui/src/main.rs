@@ -33,6 +33,13 @@ const THEME_KEY: &str = "mole_theme";
 fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().collect();
     let screenshot = arg_value(&args, "--screenshot").map(PathBuf::from);
+    // A windows-subsystem app shows no console, so a panic or a window that fails
+    // to open would just vanish — exactly how a missing runtime DLL looked on a
+    // friend's PC. Surface it in a dialog instead. Skipped for --screenshot runs.
+    let headless = screenshot.is_some();
+    if !headless {
+        dialog::install_panic_hook();
+    }
     let lang_override = arg_value(&args, "--lang");
     let theme_override = arg_value(&args, "--theme");
     let check_host = arg_value(&args, "--check");
@@ -48,7 +55,7 @@ fn main() -> eframe::Result {
         viewport = viewport.with_icon(icon);
     }
 
-    eframe::run_native(
+    let result = eframe::run_native(
         "Mole",
         eframe::NativeOptions {
             viewport,
@@ -68,7 +75,58 @@ fn main() -> eframe::Result {
                 },
             )))
         }),
-    )
+    );
+    if !headless {
+        if let Err(e) = &result {
+            dialog::error(&format!(
+                "Mole penceresi açılamadı:\n\n{e}\n\n\
+                 Bilgisayarın grafik (OpenGL) sürücüsü eksik ya da çok eski olabilir."
+            ));
+        }
+    }
+    result
+}
+
+/// Native message boxes, so a failure the window can't show is never silent.
+mod dialog {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        MessageBoxW, MB_ICONERROR, MB_OK, MB_SETFOREGROUND,
+    };
+
+    fn wide(s: &str) -> Vec<u16> {
+        OsStr::new(s).encode_wide().chain(Some(0)).collect()
+    }
+
+    /// Show an error dialog titled "Mole".
+    pub fn error(text: &str) {
+        let body = wide(text);
+        let title = wide("Mole");
+        unsafe {
+            MessageBoxW(
+                std::ptr::null_mut(),
+                body.as_ptr(),
+                title.as_ptr(),
+                MB_OK | MB_ICONERROR | MB_SETFOREGROUND,
+            );
+        }
+    }
+
+    /// Report a panic in a dialog (and the service log) instead of vanishing.
+    pub fn install_panic_hook() {
+        let default = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let msg = info.to_string();
+            mole_core::servicelog::log(&format!("mole-gui panic: {msg}"));
+            error(&format!(
+                "Mole beklenmedik bir şekilde kapandı.\n\n{msg}\n\n\
+                 Ayrıntı: %ProgramData%\\Mole\\mole.log"
+            ));
+            default(info);
+        }));
+    }
 }
 
 /// Command-line startup options (mostly for `--screenshot` self-tests).

@@ -1,14 +1,13 @@
 name: Release
 
-# Tag a version (e.g. v0.1.0) to build the zip people download: the CLI (which
-# carries the signed WinDivert driver inside it), the window, the two .cmd
-# helpers, the READMEs and both licences — plus a SHA-256 file to check it by.
+# Tag a version (e.g. v0.1.1) to build and verify the download zip: the CLI (which
+# carries the signed WinDivert driver inside it), the window, the two .cmd helpers,
+# the READMEs and both licences — plus a SHA-256 file to check it by. The zip is
+# uploaded as a build artifact; the actual GitHub Release is published by hand so
+# it is authored by the maintainer's account, not github-actions.
 on:
   push:
     tags: ["v*"]
-
-permissions:
-  contents: write
 
 jobs:
   package:
@@ -21,6 +20,17 @@ jobs:
         run: cargo test --all
       - name: Build release
         run: cargo build --release --all
+      - name: Self-contained binaries (no VC++ redist needed)
+        shell: pwsh
+        run: |
+          foreach ($exe in 'target/release/mole.exe','target/release/mole-gui.exe') {
+            $text = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($exe))
+            if ($text -match 'VCRUNTIME\d+\.dll' -or $text -match 'MSVCP\d+\.dll') {
+              Write-Error "Dynamic CRT dependency in $exe — release would fail on a stock Windows."
+              exit 1
+            }
+          }
+          Write-Host "OK: binaries are statically linked."
       - name: Stage package
         shell: pwsh
         run: |
@@ -36,9 +46,10 @@ jobs:
           }
           # LF line endings, so `sha256sum -c` reads it as-is.
           [IO.File]::WriteAllText("$PWD/SHA256SUMS.txt", ($lines -join "`n") + "`n")
-      - name: Publish release
-        uses: softprops/action-gh-release@v2
+      - name: Upload build artifacts (published to Releases by hand)
+        uses: actions/upload-artifact@v4
         with:
-          files: |
+          name: Mole-${{ github.ref_name }}
+          path: |
             Mole-${{ github.ref_name }}.zip
             SHA256SUMS.txt

@@ -28,3 +28,21 @@ jobs:
         run: cargo test --all
       - name: Build release
         run: cargo build --release --all
+      - name: Self-contained binaries (no VC++ redist needed)
+        shell: pwsh
+        run: |
+          # The shipped exes must statically link the CRT, or they fail to start
+          # on a stock Windows that lacks the Visual C++ Redistributable. Fail the
+          # build if a dynamic CRT dependency (VCRUNTIME/MSVCP) sneaks back in.
+          $bad = @()
+          foreach ($exe in 'target/release/mole.exe','target/release/mole-gui.exe') {
+            $text = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($exe))
+            if ($text -match 'VCRUNTIME\d+\.dll' -or $text -match 'MSVCP\d+\.dll') {
+              $bad += $exe
+            }
+          }
+          if ($bad.Count) {
+            Write-Error "Dynamic CRT dependency found in: $($bad -join ', '). Ensure .cargo/config.toml sets +crt-static."
+            exit 1
+          }
+          Write-Host "OK: mole.exe and mole-gui.exe are statically linked."

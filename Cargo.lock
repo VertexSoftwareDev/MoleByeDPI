@@ -1147,7 +1147,7 @@ dependencies = [
 
 [[package]]
 name = "mole-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "mole-core",
  "mole-dns",
@@ -1159,7 +1159,7 @@ dependencies = [
 
 [[package]]
 name = "mole-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -1168,7 +1168,7 @@ dependencies = [
 
 [[package]]
 name = "mole-dns"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "rustls",
  "rustls-platform-verifier",
@@ -1176,7 +1176,7 @@ dependencies = [
 
 [[package]]
 name = "mole-gui"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "eframe",
  "image",
@@ -1190,7 +1190,7 @@ dependencies = [
 
 [[package]]
 name = "mole-probe"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "mole-core",
  "mole-dns",
